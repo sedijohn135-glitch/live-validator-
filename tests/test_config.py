@@ -1,0 +1,66 @@
+from app.config import BALANCED, STRICT, load_settings, resolve_data_dir
+
+
+def test_defaults_without_any_environment():
+    settings = load_settings({})
+    assert settings.profile is STRICT
+    assert settings.symbols == ("XAUUSD", "BTCUSD")
+    assert not settings.telegram_configured()
+    assert not settings.ctrader_configured()
+    assert settings.public_base_url == "http://localhost:8080"
+
+
+def test_garbage_environment_never_raises():
+    settings = load_settings(
+        {
+            "VALIDATOR_PROFILE": "banana",
+            "PRICE_DIGITS": "{not json",
+            "PRICE_BANDS": '{"XAUUSD": "nope"}',
+            "MAX_SPREAD": '{"XAUUSD": "x"}',
+            "SYMBOL_MAP": "[]",
+            "OWNER_PASSWORD": "short",
+        }
+    )
+    assert settings.profile is STRICT
+    assert len(settings.warnings) >= 5
+    assert settings.symbol("XAUUSD").display_decimals == 2
+
+
+def test_balanced_profile_thresholds():
+    settings = load_settings({"VALIDATOR_PROFILE": "balanced"})
+    assert settings.profile is BALANCED
+    assert settings.profile.rr_min_trigger == 1.5
+    assert settings.profile.ce_hard_fvg is False
+    assert settings.profile.checklist_min_pos == 6
+
+
+def test_symbol_overrides():
+    settings = load_settings(
+        {"PRICE_DIGITS": '{"XAUUSD": 3}', "MAX_SPREAD": '{"XAUUSD": 0.5}', "PRICE_BANDS": '{"XAUUSD": [100, 200]}'}
+    )
+    sym = settings.symbol("XAUUSD")
+    assert sym.display_decimals == 3
+    assert sym.max_spread_abs == 0.5
+    assert sym.price_band == (100.0, 200.0)
+
+
+def test_public_base_url_is_normalised():
+    assert load_settings({"PUBLIC_BASE_URL": "https://x.up.railway.app/"}).public_base_url == "https://x.up.railway.app"
+    assert load_settings({"RAILWAY_PUBLIC_DOMAIN": "x.up.railway.app"}).public_base_url == "https://x.up.railway.app"
+
+
+def test_data_dir_resolution_and_volume_warning():
+    path, on_volume, warning = resolve_data_dir({})
+    assert path == "./data" and not on_volume and warning == ""
+
+    path, on_volume, warning = resolve_data_dir({"RAILWAY_ENVIRONMENT": "production"})
+    assert path == "./data" and not on_volume
+    assert "Volume" in warning
+
+    path, on_volume, warning = resolve_data_dir(
+        {"RAILWAY_ENVIRONMENT": "production", "RAILWAY_VOLUME_MOUNT_PATH": "/data"}
+    )
+    assert path == "/data" and on_volume and warning == ""
+
+    path, on_volume, _ = resolve_data_dir({"DATA_DIR": "/custom", "RAILWAY_VOLUME_MOUNT_PATH": "/data"})
+    assert path == "/custom" and not on_volume
