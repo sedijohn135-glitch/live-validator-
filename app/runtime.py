@@ -39,6 +39,9 @@ from app.timeutil import (
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_TIMEFRAMES = ("D1", "H4", "H1", "M15", "M5", "M1")
+# What /selftest and the data block print, and the subset a snapshot cannot do without.
+REPORT_TIMEFRAMES = ("M1", "M5", "M15", "H1", "H4", "D1")
+REQUIRED_TIMEFRAMES = ("M1", "M5", "M15", "H1", "D1")
 HISTORY_COUNTS = {"W1": 12, "D1": 300, "H4": 120, "H1": 300, "M30": 120, "M15": 300, "M5": 400, "M1": 1500}
 SNAPSHOT_CACHE_S = 15.0
 QUOTE_FALLBACK_AFTER_S = 8.0  # beyond this the newest candle close stands in for the tick
@@ -346,8 +349,10 @@ class Runtime:
     def data_block(self, symbol: str, has_quote: bool, now: float | None = None) -> dict[str, Any]:
         """Whether this snapshot can be analysed at all, and why not when it cannot."""
         now = self.clock() if now is None else now
-        bars = {tf: len(self.candles.series(symbol, tf)) for tf in ("M1", "M5", "M15", "H1", "D1")}
-        usable = has_quote and all(count >= 15 for count in bars.values())
+        # H4 is reported but not gated on: the trigger loop never reads it, so a thin H4 history
+        # must not make an otherwise complete snapshot unusable.
+        bars = {tf: len(self.candles.series(symbol, tf)) for tf in REPORT_TIMEFRAMES}
+        usable = has_quote and all(bars[tf] >= 15 for tf in REQUIRED_TIMEFRAMES)
         block: dict[str, Any] = {
             "status": self.data_status,
             "usable": usable,
@@ -740,13 +745,14 @@ class Runtime:
                 if age > 5:
                     lines.append(f"⚠️ {tg.esc(symbol)}: ora e serverit ndryshon me {age}s")
             with contextlib.suppress(Exception):
-                await self.ensure_history(symbol, ("M1", "M5", "M15", "H1", "D1"))
-            for timeframe in ("M1", "M5", "M15", "H1", "D1"):
+                await self.ensure_history(symbol, REPORT_TIMEFRAMES)
+            for timeframe in REPORT_TIMEFRAMES:
                 candle = self.candles.last(symbol, timeframe)
                 if candle is None:
                     lines.append(f"❌ {tg.esc(symbol)} {timeframe}: s'ka qirinj")
                     continue
-                aligned = candle.t % TIMEFRAMES[timeframe] == 0 if timeframe != "D1" else True
+                # H4 and D1 open on the broker's 17:00 NY day, not on the epoch grid.
+                aligned = candle.t % TIMEFRAMES[timeframe] == 0 if timeframe not in ("H4", "D1") else True
                 mark = "✅" if aligned else "⚠️"
                 lines.append(f"{mark} {tg.esc(symbol)} {timeframe}: {tg.esc(ny_string(candle.t))} NY")
         lines.append(

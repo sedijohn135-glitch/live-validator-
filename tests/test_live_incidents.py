@@ -323,3 +323,29 @@ def test_the_account_number_is_readable_from_the_token(tmp_path):
     assert account_hint("") == ""
     assert account_hint("not-a-token") == ""
     assert account_hint("tok" * 8) == ""  # the harness token carries no account
+
+
+def test_h4_is_reported_but_never_blocks_a_snapshot(tmp_path):
+    """H4 feeds G-15 swings and the H4 FVGs, so its bar count belongs in the report."""
+    runtime, _fake, _tg = make_runtime(tmp_path)
+    now = ts("2026-09-16 08:10") + 2
+    runtime.clock = lambda: now
+    load_candles(runtime, clean_long_scenario(), now)
+
+    block = runtime.data_block("XAUUSD", True, now)
+    assert "H4" in block["candles_held"]
+    assert block["usable"] is True
+
+    assert block["candles_held"]["H4"] > 0
+
+    # A run where H4 never arrived: still usable, and the report says plainly that it is empty.
+    thin, _fake2, _tg2 = make_runtime(tmp_path / "thin")
+    thin.clock = lambda: now
+    context = clean_long_scenario().context_provider()("XAUUSD", now)
+    for timeframe in ("M1", "M5", "M15", "M30", "H1", "D1", "W1"):
+        series = context.store.series("XAUUSD", timeframe)
+        if series:
+            thin.candles.merge("XAUUSD", timeframe, series, now + 10**6)
+    thin_block = thin.data_block("XAUUSD", True, now)
+    assert thin_block["candles_held"]["H4"] == 0
+    assert thin_block["usable"] is True
