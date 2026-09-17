@@ -295,7 +295,7 @@ def test_auth_style_errors_are_classified_as_auth(tmp_path, message):
 
 def test_other_errors_are_data_errors(tmp_path):
     async def body(client, fake, _store):
-        fake.fail_next = RuntimeError("502 UNKNOWN_SYMBOL")
+        fake.fail_next = RuntimeError("symbol not tradable right now")
         with pytest.raises(DataError):
             await client.call("get_version")
         assert client.status == "down"
@@ -483,3 +483,32 @@ def test_a_day_of_m1_history_survives_the_bar_limit(tmp_path):
         assert (candles[-1].t - candles[0].t) / 3600 == pytest.approx(23.98, abs=0.1)
 
     with_client(tmp_path, body, fake=FakeCTrader(max_bars_per_response=100))
+
+
+def test_a_transient_transport_error_is_retried_once(tmp_path):
+    """Railway drops idle upstream sockets; one reconnect beats reporting an outage."""
+
+    async def body(client, fake, _store):
+        fake.fail_next = RuntimeError("URL_UNREACHABLE: connection reset by peer")
+        payload = await client.call("get_version")
+        assert payload, "the retry did not deliver a result"
+        assert client.status == "ok"
+
+    with_client(tmp_path, body)
+
+
+def test_a_verdict_on_the_request_is_not_retried(tmp_path):
+    """502 UNKNOWN_SYMBOL and -32602 are answers, not hiccups: retrying only burns rate limit."""
+
+    async def body(client, fake, _store):
+        fake.fail_next = RuntimeError("502 UNKNOWN_SYMBOL")
+        before = len(fake.calls)
+        with pytest.raises(DataError):
+            await client.call("get_version")
+        assert len(fake.calls) - before == 1
+
+        fake.fail_next = RuntimeError("-32602 Invalid arguments for tool get_trendbars")
+        with pytest.raises(DataError):
+            await client.call("get_version")
+
+    with_client(tmp_path, body)

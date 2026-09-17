@@ -48,7 +48,12 @@ SESSION_LEVEL_KEYS = (
     "pwh",
     "pwl",
     "ny_midnight_open",
+    "six_am_open",
+    "lookback_high",
+    "lookback_low",
 )
+
+LIQUIDITY_SWING_TIMEFRAMES = ("M5", "M15", "H1", "H4", "D1")
 
 
 @dataclass
@@ -205,8 +210,9 @@ def liquidity_is_real(setup: SetupInput, ctx: MarketContext) -> bool:
     level = setup.opposing_liquidity_level
     tol = 2 * ctx.tol("M15")
     horizon = ctx.now_ts - 5 * 86400
-    for tf in ("M5", "M15", "H1"):
-        candles = [c for c in ctx.candles(tf) if c.t >= horizon]
+    for tf in LIQUIDITY_SWING_TIMEFRAMES:
+        # Daily swings carry no 5-day horizon: a monthly high is still the pool being run.
+        candles = ctx.candles(tf) if tf in ("H4", "D1") else [c for c in ctx.candles(tf) if c.t >= horizon]
         indices = swing_low_indices(candles) if setup.is_long else swing_high_indices(candles)
         for i in indices:
             price = candles[i].l if setup.is_long else candles[i].h
@@ -274,7 +280,14 @@ def g01_schema(setup: SetupInput, ctx: MarketContext) -> RuleResult:
 
 
 def g02_data(setup: SetupInput, ctx: MarketContext) -> RuleResult:
-    if ctx.bid is None or ctx.quote_age > ctx.profile.quote_max_age_s * 3:
+    """Never arm blind — but a tick-feed hiccup is not blindness while the candles are fresh.
+
+    Arming only starts monitoring, so a candle close standing in for the tick is enough here. The
+    ENTER decision is a different matter: T-07 demands a real quote no older than five seconds.
+    """
+    if ctx.bid is None:
+        return fail("G-02", "Të dhënat mungojnë (çmimi live)", quote_age=ctx.quote_age)
+    if ctx.quote_age > ctx.profile.intake_quote_max_age_s:
         return fail("G-02", "Të dhënat mungojnë (çmimi live)", quote_age=ctx.quote_age)
     needed = set(setup.timeframes) | {"H1", "D1"}
     missing = [tf for tf in sorted(needed) if not ctx.has_candles(tf, 15)]
@@ -444,10 +457,14 @@ def g14_pda_not_failed(setup: SetupInput, ctx: MarketContext) -> RuleResult:
 def g15_liquidity(setup: SetupInput, ctx: MarketContext) -> RuleResult:
     level = setup.opposing_liquidity_level
     tol = ctx.tol("M15")
+    # v11 §5.8 only requires that the opposing pool was taken before entry. It is routinely far
+    # beyond the stop — a PM continuation shorts an inversion array long after the morning swept the
+    # PDH. Placement therefore only checks the side: SSL below a long, BSL above a short. G-07 still
+    # keeps every level within 6 x ATR(D1) of price, and the reality and sweep checks below do the work.
     if setup.is_long:
-        placed = setup.stop_loss - tol <= level <= setup.entry_high + tol
+        placed = level <= setup.entry_low + tol
     else:
-        placed = setup.entry_low - tol <= level <= setup.stop_loss + tol
+        placed = level >= setup.entry_high - tol
     if not placed:
         return fail("G-15", "Likuiditeti kundërt s'është real / s'është marrë", reason="placement")
     if not liquidity_is_real(setup, ctx):
@@ -850,6 +867,9 @@ def chase_limit(setup: SetupInput, rr_min_trigger: float, chase_frac: float) -> 
 
 
 def t07_price(setup: SetupInput, ctx: MarketContext) -> RuleResult:
+    if ctx.quote_synthetic:
+        # A candle close is a stand-in for arming, never a price to enter at.
+        return fail("T-07", "çmimi live mungon (vetëm qiri)", synthetic=True)
     if ctx.quote_age > ctx.profile.quote_max_age_s:
         return fail("T-07", "çmimi live është i vjetër", age=ctx.quote_age)
     entry = ctx.ask if setup.is_long else ctx.bid

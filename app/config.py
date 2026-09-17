@@ -122,6 +122,7 @@ class Profile:
     outcome_horizon_h: float
     quote_poll_s: float = 2.0
     quote_max_age_s: float = 5.0
+    intake_quote_max_age_s: float = 180.0  # arming tolerates a stand-in price; T-07 never does
     close_grace_s: float = 2.0
     data_outage_alert_s: float = 60.0
     dedup_window_min: float = 15.0

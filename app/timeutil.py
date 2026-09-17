@@ -252,7 +252,9 @@ def model_windows(model: str, formed_at: datetime | None, balanced: bool) -> lis
             return []
         return [_w("OR_PM", "14:00", "16:00")]
     if model == "LUNCH_MACRO_PM":
-        return [_w("LUNCH_MACRO_PM", "13:30", "16:00") if balanced else _w("LUNCH_MACRO_PM", "14:00", "15:00")]
+        # v11 §3.10 Step 5 puts the Last Hour (15:00-16:00) inside this flow: the PM inversion
+        # arrays are worked until the cash close, so the window runs 13:30-16:00 in both profiles.
+        return [_w("LUNCH_MACRO_PM", "13:30", "16:00")]
     return []
 
 

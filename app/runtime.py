@@ -22,7 +22,7 @@ from app.config import TIMEFRAMES, VERSION, Settings, load_settings
 from app.context import MarketContext
 from app.ctrader import AuthError, CTraderClient, DataError, Quote
 from app.engine import Engine
-from app.market import CandleStore, build_snapshot, session_levels
+from app.market import CandleStore, build_snapshot, median_spread, session_levels
 from app.store import Store
 from app.timeutil import (
     active_macro,
@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 SNAPSHOT_TIMEFRAMES = ("D1", "H4", "H1", "M15", "M5", "M1")
 HISTORY_COUNTS = {"W1": 12, "D1": 300, "H4": 120, "H1": 300, "M30": 120, "M15": 300, "M5": 400, "M1": 1500}
 SNAPSHOT_CACHE_S = 15.0
+QUOTE_FALLBACK_AFTER_S = 8.0  # beyond this the newest candle close stands in for the tick
 LEASE_TTL_S = 30.0
 LEASE_HEARTBEAT_S = 10.0
 IDLE_HEARTBEAT_S = 300.0
@@ -102,9 +103,37 @@ class Runtime:
         self.start_count = 0  # asserted by the "lifespan runs once" test
 
     # --------------------------------------------------------------- context
+    def quote_for(self, symbol: str, now: float) -> Quote | None:
+        """The live tick, or the newest candle close standing in for it while the feed hiccups.
+
+        A synthetic quote is enough to arm a setup and to judge invalidation, but T-07 refuses it,
+        so a candle close can never become an ENTER.
+        """
+        quote = self.quotes.get(symbol)
+        if quote is not None and now - quote.ts <= QUOTE_FALLBACK_AFTER_S:
+            return quote
+        fallback = self._candle_quote(symbol, now)
+        if fallback is None:
+            return quote
+        if quote is not None and quote.ts >= fallback.ts:
+            return quote
+        return fallback
+
+    def _candle_quote(self, symbol: str, now: float) -> Quote | None:
+        for timeframe in ("M1", "M5"):
+            candle = self.candles.last(symbol, timeframe)
+            if candle is None:
+                continue
+            spread = median_spread(
+                list(self.spread_samples.get(symbol, ())), self.settings.symbol(symbol).max_spread_abs
+            )
+            close_ts = candle.t + TIMEFRAMES[timeframe]
+            return Quote(symbol, candle.c, candle.c + spread, min(close_ts, now), synthetic=True)
+        return None
+
     def make_context(self, symbol: str, now: float | None = None) -> MarketContext:
         now = self.clock() if now is None else now
-        quote = self.quotes.get(symbol)
+        quote = self.quote_for(symbol, now)
         profile = self.settings.profile
         ctx = MarketContext(
             symbol=symbol,
@@ -115,6 +144,7 @@ class Runtime:
             bid=quote.bid if quote else None,
             ask=quote.ask if quote else None,
             quote_ts=quote.ts if quote else None,
+            quote_synthetic=bool(quote and quote.synthetic),
             spread_samples=list(self.spread_samples.get(symbol, ())),
             paused=self.paused,
             data_ok=self.data_status == "ok",
@@ -282,7 +312,7 @@ class Runtime:
         await self.refresh_candles(symbol, SNAPSHOT_TIMEFRAMES, count=3)
         await self.refresh_quotes_for(symbol)
         decimals = self.settings.symbol(symbol).display_decimals
-        quote = self.quotes.get(symbol)
+        quote = self.quote_for(symbol, now)
         payload = build_snapshot(
             symbol,
             self.candles,

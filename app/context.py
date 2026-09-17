@@ -18,6 +18,7 @@ class MarketContext:
     bid: float | None = None
     ask: float | None = None
     quote_ts: float | None = None
+    quote_synthetic: bool = False  # True when the price came from a candle close, not a tick
     spread_samples: list[float] = field(default_factory=list)
     levels: dict[str, float | None] = field(default_factory=dict)
     news_blackout: str | None = None

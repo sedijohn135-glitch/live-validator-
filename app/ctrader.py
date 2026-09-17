@@ -72,6 +72,24 @@ URL_KEYS = ("url", "serverurl", "httpurl", "endpoint", "server_url", "http_url",
 TOKEN_KEYS = ("authorization", "token", "bearer", "access_token", "accesstoken", "apikey", "api_key")
 
 
+TRANSIENT_PATTERN = re.compile(
+    r"unreachable|internal_error|internal error|timeout|timed out|connection|reset|closed|"
+    r"broken pipe|503|504|-32603",
+    re.IGNORECASE,
+)
+# cTrader answers an unknown symbol with 502 and an invalid argument with -32602: both are verdicts
+# on the request, and retrying them only burns rate limit.
+PERMANENT_PATTERN = re.compile(r"unknown_symbol|unknown symbol|-32602|invalid arguments", re.IGNORECASE)
+
+
+def is_transient(error: BaseException) -> bool:
+    """A transport hiccup worth one reconnect, as opposed to a verdict on the request."""
+    text = str(error)
+    if PERMANENT_PATTERN.search(text):
+        return False
+    return bool(TRANSIENT_PATTERN.search(text))
+
+
 class ForbiddenTool(Exception):
     """Raised when anything outside the read-only allowlist is requested."""
 
@@ -158,8 +176,10 @@ def parse_config(raw: str, known_url: str = "") -> Credentials | None:
     return None
 
 
-def resolve_credentials(settings: Settings, override: str | None) -> Credentials | None:
-    """kv override (Telegram `/ctrader`) → CTRADER_MCP_CONFIG → CTRADER_MCP_URL + CTRADER_MCP_TOKEN."""
+def resolve_credentials(
+    settings: Settings, override: str | None, last_url: str = ""
+) -> Credentials | None:
+    """kv override (Telegram `/ctrader`) → CTRADER_MCP_CONFIG → CTRADER_MCP_TOKEN (+ URL or the last known one)."""
     known_url = settings.ctrader_url
     if override:
         parsed = parse_config(override, known_url)
@@ -169,8 +189,10 @@ def resolve_credentials(settings: Settings, override: str | None) -> Credentials
         parsed = parse_config(settings.ctrader_config, known_url)
         if parsed:
             return Credentials(parsed.url, parsed.token, "env_config")
-    if settings.ctrader_url and settings.ctrader_token:
-        return Credentials(settings.ctrader_url.rstrip("/"), _clean_token(settings.ctrader_token), "env_pair")
+    if settings.ctrader_token:
+        url = settings.ctrader_url or known_url or last_url or ""
+        if url:
+            return Credentials(url.rstrip("/"), _clean_token(settings.ctrader_token), "env_pair")
     return None
 
 
@@ -235,6 +257,7 @@ class Quote:
     bid: float
     ask: float
     ts: float
+    synthetic: bool = False  # derived from a candle close, not a live tick: may arm, never trigger
 
     @property
     def spread(self) -> float:
@@ -269,9 +292,13 @@ class CTraderClient:
     # ------------------------------------------------------------- connection
     def load_credentials(self) -> Credentials | None:
         override = self.store.get_kv("ctrader_override") if self.store else None
-        self.credentials = resolve_credentials(self.settings, override)
+        last_url = (self.store.get_kv("ctrader_last_url") or "") if self.store else ""
+        self.credentials = resolve_credentials(self.settings, override, last_url)
         if self.credentials is None:
             self.status = "not_configured"
+        elif self.store and self.credentials.url:
+            # Remembered so that a token pasted on its own keeps working after a restart.
+            self.store.set_kv("ctrader_last_url", self.credentials.url)
         return self.credentials
 
     async def connect(self) -> None:
@@ -326,6 +353,19 @@ class CTraderClient:
         """The only way out to cTrader. Anything outside the allowlist is refused here."""
         if tool not in ALLOWED_TOOLS:
             raise ForbiddenTool(f"tool '{tool}' is not read-only and can never be called")
+        try:
+            return await self._call_once(tool, args)
+        except AuthError:
+            raise
+        except DataError as exc:
+            if not is_transient(exc):
+                raise
+            # Railway drops idle upstream sockets; one reconnect is cheaper than an outage.
+            logger.info("reconnecting after a transient cTrader error: %s", exc)
+            await self.reconnect()
+            return await self._call_once(tool, args)
+
+    async def _call_once(self, tool: str, args: dict[str, Any] | None = None) -> Any:
         await self.connect()
         await self.limiter.acquire(tool in HISTORICAL_TOOLS)
         async with self.limiter.slot():
