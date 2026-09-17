@@ -335,3 +335,39 @@ def test_no_trading_call_was_recorded_by_any_test(tmp_path):
         assert fake.trading_calls == []
 
     with_client(tmp_path, body)
+
+
+def test_unresolved_symbol_is_an_error_not_silent_emptiness(tmp_path):
+    """A missing symbol must surface as a data error; silence would be reported as health."""
+
+    async def body(client, _fake, _store):
+        client.symbols.pop("XAUUSD", None)
+        with pytest.raises(DataError, match="nuk u zgjidh"):
+            await client.candles("XAUUSD", "M5", count=5)
+        with pytest.raises(DataError, match="asnjë simbol"):
+            await client.quotes(["XAUUSD"])
+
+    with_client(tmp_path, body)
+
+
+def test_disabled_symbol_is_an_error(tmp_path):
+    async def body(client, _fake, _store):
+        info = client.symbols["XAUUSD"]
+        client.symbols["XAUUSD"] = ctrader.SymbolInfo(info.name, info.symbol_id, info.digits, enabled=False)
+        with pytest.raises(DataError, match="çaktivizuar"):
+            await client.candles("XAUUSD", "M5", count=5)
+
+    with_client(tmp_path, body)
+
+
+def test_a_missing_symbol_warning_names_what_ctrader_offers(tmp_path):
+    """The owner needs the real broker name to put in SYMBOL_MAP."""
+
+    async def body(client, _fake, _store):
+        client.settings.symbols = ("XAUUSD", "XAUEUR")
+        await client.load_symbols()
+        assert "XAUEUR" not in client.symbols
+        warning = next(w for w in client.warnings if "XAUEUR" in w)
+        assert "XAUUSD" in warning  # the near-miss cTrader does offer
+
+    with_client(tmp_path, body)

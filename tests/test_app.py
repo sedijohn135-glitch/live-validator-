@@ -448,3 +448,20 @@ def test_an_unknown_auth_value_falls_back_to_oauth(tmp_path):
     assert any("banana" in w for w in runtime.settings.warnings)
     with TestClient(app, base_url=BASE_URL) as test_client:
         assert test_client.post("/mcp", json=rpc("tools/list"), headers=MCP_HEADERS).status_code == 401
+
+
+def test_snapshot_says_so_when_there_is_no_market_data(tmp_path):
+    """A skeleton of nulls must never look analysable: Gemini would invent an analysis."""
+    import asyncio
+
+    app, runtime, _fake, _tg = make_app(tmp_path, CTRADER_MCP_URL="", CTRADER_MCP_TOKEN="")
+    with TestClient(app, base_url=BASE_URL):
+        payload = asyncio.run(runtime.snapshot("XAUUSD"))
+    assert payload["data"]["usable"] is False
+    assert payload["data"]["symbols_resolved"] == []
+    assert payload["data"]["detail"]
+    assert payload["notes"][0].startswith("NO MARKET DATA")
+    assert payload["quote"] is None
+    assert runtime.data_status != "ok"  # never report health when nothing arrived
+    assert runtime.paused is True
+    assert "XAUUSD" not in runtime.last_snapshot  # an unusable snapshot is not cached

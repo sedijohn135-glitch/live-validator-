@@ -361,13 +361,26 @@ def build_snapshot(
     quote: dict | None,
     levels: dict,
     time_block: dict,
+    data: dict | None = None,
 ) -> dict:
     """The `market_snapshot` payload (mcp-oauth §6). Compact by construction: fixed counts, flat arrays."""
     atr = {tf: store.atr(symbol, tf) for tf in ("M5", "M15", "H1", "D1")}
+    notes = [
+        "times are New York",
+        "candle time = open time",
+        "use formed_at exactly in setup_submit",
+    ]
+    if data is not None and not data.get("usable", True):
+        notes.insert(
+            0,
+            "NO MARKET DATA: do not analyse and do not call setup_submit. Tell the owner to run "
+            "/selftest on Telegram.",
+        )
     return {
         "schema": "snapshot/1",
         "symbol": symbol,
         "source": "IC Markets cTrader (bid candles)",
+        "data": data or {"status": "unknown", "usable": True},
         "time": time_block,
         "quote": quote,
         "levels": {k: (round(v, decimals) if isinstance(v, (int, float)) else v) for k, v in levels.items()},
@@ -378,9 +391,5 @@ def build_snapshot(
             tf: [c.as_list(decimals) for c in store.series(symbol, tf)[-count:]]
             for tf, count in SNAPSHOT_COUNTS.items()
         },
-        "notes": [
-            "times are New York",
-            "candle time = open time",
-            "use formed_at exactly in setup_submit",
-        ],
+        "notes": notes,
     }

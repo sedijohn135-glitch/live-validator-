@@ -379,6 +379,9 @@ class CTraderClient:
                     self.warnings.append(f"simboli {wanted} është i paqartë te cTrader")
                     return None
         if candidate is None:
+            close = [n for n in names if n and wanted[:3].upper() in n.upper()][:5]
+            hint = f" — te cTrader gjenden: {', '.join(close)}" if close else ""
+            self.warnings.append(f"simboli {wanted} nuk u gjet{hint}")
             return None
         symbol_id = candidate.get("symbolId") or candidate.get("id")
         if symbol_id is None:
@@ -429,7 +432,7 @@ class CTraderClient:
             ids.append(info.symbol_id)
             by_id[info.symbol_id] = name
         if not ids:
-            return {}
+            raise DataError("asnjë simbol i kërkuar nuk u zgjidh te cTrader")
         payload = await self.call("get_spot_prices", {"symbolIds": ids})
         out: dict[str, Quote] = {}
         for entry in _as_list(payload, "prices"):
@@ -449,8 +452,10 @@ class CTraderClient:
     async def candles(self, symbol: str, timeframe: str, count: int = 100, end_ts: float | None = None):
         """Closed candles, oldest first, chunked so no request window exceeds 720 hours."""
         info = self.symbols.get(symbol)
-        if info is None or not info.enabled:
-            return []
+        if info is None:
+            raise DataError(f"simboli {symbol} nuk u zgjidh te cTrader")
+        if not info.enabled:
+            raise DataError(f"simboli {symbol} është çaktivizuar (dekodimi i çmimit dështoi)")
         period = PERIODS.get(timeframe.upper())
         if period is None:
             raise DataError(f"timeframe {timeframe} is not supported by cTrader")

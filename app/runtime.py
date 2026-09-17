@@ -168,21 +168,26 @@ class Runtime:
         recent = {s for s, (stamp, _payload) in self.last_snapshot.items() if self.clock() - stamp < 300}
         return [s for s in self.settings.symbols if s in active or s in recent]
 
-    async def refresh_candles(self, symbol: str, timeframes: tuple[str, ...], count: int = 3) -> None:
+    async def refresh_candles(self, symbol: str, timeframes: tuple[str, ...], count: int = 3) -> bool:
+        """Fetch candles. Returns False when nothing arrived, so no caller can mistake it for health."""
         now = self.clock()
+        fetched = False
         for timeframe in timeframes:
             try:
                 bars = await self.ctrader.candles(symbol, timeframe, count=count, end_ts=now)
             except AuthError as exc:
                 self._on_auth_error(exc)
-                return
+                return False
             except DataError as exc:
                 self._on_data_error(exc)
-                return
+                return False
             if bars:
                 keep = HISTORY_COUNTS.get(timeframe, 400)
                 self.candles.merge(symbol, timeframe, bars, now, keep=keep)
-        self._on_data_ok()
+                fetched = True
+        if fetched:
+            self._on_data_ok()
+        return fetched
 
     async def ensure_history(self, symbol: str, timeframes: tuple[str, ...] | None = None) -> None:
         """Fetch the deep history a snapshot or a newly armed setup needs."""
@@ -190,8 +195,10 @@ class Runtime:
         for timeframe in wanted:
             if (symbol, timeframe) in self._history_loaded:
                 continue
-            await self.refresh_candles(symbol, (timeframe,), count=HISTORY_COUNTS.get(timeframe, 300))
-            self._history_loaded.add((symbol, timeframe))
+            # Only remember a timeframe once it really arrived: a failed fetch must be retried,
+            # otherwise a token that is fixed later never refills the history.
+            if await self.refresh_candles(symbol, (timeframe,), count=HISTORY_COUNTS.get(timeframe, 300)):
+                self._history_loaded.add((symbol, timeframe))
 
     def due_timeframes(self, symbol: str, now: float) -> tuple[str, ...]:
         """Timeframes whose newest bar should have closed by now."""
@@ -291,9 +298,28 @@ class Runtime:
             else None,
             session_levels(self.candles, symbol, now),
             self.time_block(symbol, now),
+            self.data_block(symbol, quote is not None),
         )
-        self.last_snapshot[symbol] = (now, payload)
+        if payload["data"]["usable"]:
+            self.last_snapshot[symbol] = (now, payload)
         return payload
+
+    def data_block(self, symbol: str, has_quote: bool) -> dict[str, Any]:
+        """Whether this snapshot can be analysed at all, and why not when it cannot."""
+        bars = {tf: len(self.candles.series(symbol, tf)) for tf in ("M5", "M15", "H1", "D1")}
+        usable = has_quote and all(count >= 15 for count in bars.values())
+        block: dict[str, Any] = {
+            "status": self.data_status,
+            "usable": usable,
+            "symbols_resolved": sorted(self.ctrader.symbols),
+            "candles_held": bars,
+        }
+        if not usable:
+            block["detail"] = self.data_error or (
+                "cTrader nuk po kthen të dhëna — kontrollo CTRADER_MCP_CONFIG dhe dërgo /selftest"
+            )
+            block["warnings"] = (self.settings.warnings + self.ctrader.warnings)[:5]
+        return block
 
     async def prepare_for_submit(self, symbol: str) -> None:
         """Fresh data before the intake gate runs: G-02 must never arm on stale or missing candles."""
