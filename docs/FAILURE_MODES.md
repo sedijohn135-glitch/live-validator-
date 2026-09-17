@@ -28,7 +28,7 @@ that is actually in the code and the test that proves it.
 | G2 | `valid_scopes=None`, `required_scopes=None` | `test_app.py::test_registration_accepts_unexpected_scopes` |
 | G3 | The provider binds `BASE/mcp` when the client sends no `resource` | `test_app.py::test_token_without_a_resource_still_works_on_mcp` |
 | G4 | `PUBLIC_BASE_URL` is normalised once; OAuth URLs are never built from the request | `test_config.py::test_public_base_url_is_normalised`, `test_app.py::test_authorization_server_metadata_uses_the_public_base_url` |
-| G5 | Clients, codes and tokens live in SQLite on the volume | `test_app.py::test_full_oauth_flow_and_refresh_rotation` plus the `DATA_DIR` resolution tests |
+| G5 | Clients, codes and tokens live in SQLite on the volume | `test_app.py::test_tokens_survive_a_restart_on_the_same_database` |
 | G6 | 24 h access tokens, refresh rotation with a 10-minute grace window | `test_app.py::test_full_oauth_flow_and_refresh_rotation` (the retried refresh still works) |
 | G7 | CSRF bound to the transaction, constant-time compare, 5 failures per IP / 20 globally, Telegram alert | `test_app.py::test_login_lockout_after_repeated_failures` |
 | G8 | Fingerprint dedupe inside `DEDUP_WINDOW_MIN` | `test_golden.py::test_15_duplicate_submit_returns_the_same_setup`, `test_tools.py::test_duplicate_submit_through_the_tool` |

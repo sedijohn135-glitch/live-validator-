@@ -354,3 +354,55 @@ def test_stale_oauth_rows_are_purged(client):
     authorize(client, registered, challenge)
     assert len(store.query("SELECT tx FROM oauth_pending")) == 1
     assert store.query_one("SELECT scope FROM login_attempts WHERE scope = 'ip:1.2.3.4'") is None
+
+
+def test_tokens_survive_a_restart_on_the_same_database(tmp_path):
+    """Failure mode G5: the Gemini link must not be lost on every redeploy."""
+    app, _runtime, _fake, _tg = make_app(tmp_path)
+    with TestClient(app, base_url=BASE_URL) as first:
+        registered = register_client(first)
+        verifier, challenge = pkce()
+        tx = authorize(first, registered, challenge)
+        code = parse_qs(urlparse(login(first, tx).headers["location"]).query)["code"][0]
+        tokens = first.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "https://gemini.google.com/callback",
+                "client_id": registered["client_id"],
+                "code_verifier": verifier,
+            },
+        ).json()
+        assert (
+            first.post(
+                "/mcp",
+                json=rpc("tools/list"),
+                headers={**MCP_HEADERS, "Authorization": f"Bearer {tokens['access_token']}"},
+            ).status_code
+            == 200
+        )
+
+    # A redeploy: a brand new process and app instance over the same volume.
+    restarted, _runtime2, _fake2, _tg2 = make_app(tmp_path)
+    with TestClient(restarted, base_url=BASE_URL) as second:
+        listed = second.post(
+            "/mcp",
+            json=rpc("tools/list"),
+            headers={**MCP_HEADERS, "Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        assert listed.status_code == 200, listed.text
+        refreshed = second.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": tokens["refresh_token"],
+                "client_id": registered["client_id"],
+            },
+        )
+        assert refreshed.status_code == 200, refreshed.text
+        assert second.post(
+            "/mcp",
+            json=rpc("tools/list"),
+            headers={**MCP_HEADERS, "Authorization": f"Bearer {refreshed.json()['access_token']}"},
+        ).status_code == 200
