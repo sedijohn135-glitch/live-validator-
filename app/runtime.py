@@ -485,6 +485,7 @@ class Runtime:
             await asyncio.sleep(30)
 
     def send_daily_report(self) -> None:
+        self.engine.evaluate_pending_shadows()
         stats = self.engine.stats(1)
         date = to_ny(from_epoch(self.clock())).strftime("%Y-%m-%d")
         text = tg.daily_report({**stats, "date": date})
@@ -546,6 +547,7 @@ class Runtime:
             return "▶️ Monitorimi vazhdoi."
         if command == "stats":
             days = 30 if argument.strip() == "30" else 7
+            self.engine.evaluate_pending_shadows()
             stats = self.engine.stats(days)
             return tg.daily_report({**stats, "date": f"{days} ditë"})
         if command == "rules":

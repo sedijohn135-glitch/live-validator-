@@ -39,7 +39,7 @@ from app.rules import (
 )
 from app.setup_model import SetupInput, normalise
 from app.store import Store, json_loads
-from app.timeutil import NY, from_epoch, ny_string, parse_ny, to_ny
+from app.timeutil import NY, friday_close, from_epoch, next_weekday_at, ny_string, parse_ny, to_ny
 
 logger = logging.getLogger(__name__)
 
@@ -321,8 +321,8 @@ class Engine:
 
     def process_setup(self, setup_id: str, ctx: MarketContext, now: float) -> None:
         row = self.store.get_setup(setup_id)
-        if row is None or row["state"] in TERMINAL:
-            return
+        if row is None or row["state"] in TERMINAL or row["outcome"] is not None:
+            return  # a settled outcome needs no further tracking
         setup, computed = self._decode(row)
         last_processed = row["last_processed_at"] or row["created_at"]
         events = self._collect_events(setup, ctx, last_processed, now)
@@ -785,10 +785,8 @@ class Engine:
         if tps_hit and len(tps_hit) == len(targets):
             self._finish(setup_id, setup, computed, f"TP{max(tps_hit)}", None, now)
             return
-        horizon = (self.store.get_setup(setup_id)["triggered_at"] or now) + (
-            self.settings.profile.outcome_horizon_h * 3600
-        )
-        if now >= horizon:
+        triggered_at = self.store.get_setup(setup_id)["triggered_at"] or now
+        if now >= self._outcome_horizon(setup, triggered_at):
             self._finish(
                 setup_id,
                 setup,
@@ -797,6 +795,18 @@ class Engine:
                 tg.timeout_message(setup.symbol, setup.direction, setup_id),
                 now,
             )
+
+    def _outcome_horizon(self, setup: SetupInput, triggered_at: float) -> float:
+        """`OUTCOME_HORIZON_H`, clamped to Thursday 10:00 for Model 2 and to Friday's close for gold."""
+        horizon = triggered_at + self.settings.profile.outcome_horizon_h * 3600
+        start = from_epoch(triggered_at)
+        if setup.entry_model == "MODEL_2":
+            horizon = min(horizon, next_weekday_at(start, weekday=3, minutes=10 * 60).timestamp())
+        if setup.symbol.upper() == "XAUUSD":
+            cutoff = friday_close(start, self.settings.profile.friday_cutoff_ny)
+            if cutoff is not None:
+                horizon = min(horizon, cutoff.timestamp())
+        return horizon
 
     def _track_quote_outcome(
         self,
@@ -915,16 +925,36 @@ class Engine:
             if hit_tp:
                 result = "WIN"
                 break
-        if filled and result == "NO_FILL":
+        if result == "NO_FILL" and self.clock() < horizon:
             return None  # still running; decide once the horizon has passed
-        if not filled and self.clock() < horizon:
-            return None
+        if filled and result == "NO_FILL":
+            # Filled but neither target nor stop was reached inside the window: no verdict either way.
+            result = "UNRESOLVED"
         shadow["result"] = result
         self.store.execute(
             "UPDATE setups SET shadow_json = ? WHERE id = ?",
             (json.dumps(shadow, separators=(",", ":")), setup_id),
         )
         return result
+
+    def evaluate_pending_shadows(self, limit: int = 20) -> int:
+        """Settle the blind-limit comparison for setups whose 24-hour window has closed."""
+        cutoff = self.clock() - 24 * 3600
+        rows = self.store.query(
+            "SELECT id, symbol, shadow_json FROM setups WHERE created_at < ? ORDER BY created_at LIMIT ?",
+            (cutoff, limit * 5),
+        )
+        settled = 0
+        for row in rows:
+            shadow = json_loads(row["shadow_json"], {})
+            if shadow.get("result") or not shadow.get("eligible"):
+                continue
+            ctx = self.context_provider(row["symbol"], self.clock())
+            if self.compute_shadow(row["id"], ctx):
+                settled += 1
+            if settled >= limit:
+                break
+        return settled
 
     def stats(self, days: int = 7) -> dict[str, Any]:
         since = self.clock() - days * 86400

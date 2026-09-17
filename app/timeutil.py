@@ -218,6 +218,16 @@ def friday_close(moment: datetime, cutoff: str) -> datetime | None:
     return cut if cut > ny else None
 
 
+def next_weekday_at(moment: datetime, weekday: int, minutes: int) -> datetime:
+    """The next occurrence of `weekday` at `minutes` past New York midnight, at or after `moment`."""
+    ny = to_ny(moment)
+    ahead = (weekday - ny.weekday()) % 7
+    candidate = ny_datetime(ny.date() + timedelta(days=ahead), minutes)
+    if candidate <= ny:
+        candidate = ny_datetime(ny.date() + timedelta(days=ahead + 7), minutes)
+    return candidate
+
+
 def model_windows(model: str, formed_at: datetime | None, balanced: bool) -> list[Window]:
     """Windows where ENTER may be sent for `model` (validation-rules §4)."""
     if model in MODEL_WINDOW_NAMES:

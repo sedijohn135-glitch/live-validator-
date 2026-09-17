@@ -158,3 +158,46 @@ def test_a_stale_tap_holds_the_setup_instead_of_killing_it(tmp_path):
     engine.process_symbol("XAUUSD")
     assert store.get_setup(result["setup_id"])["state"] in ("IN_ZONE", "TRIGGERED", "EXPIRED")
     assert not any("KONFIRMIM I HUMBUR" in t for t in texts(store))
+
+
+def test_settled_outcomes_stop_being_reprocessed(triggered):
+    engine, store, clock, setup_id, scenario = triggered
+    row = store.get_setup(setup_id)
+    setup, computed = engine._decode(row)
+    ctx = scenario.context_provider()("XAUUSD", ts("2026-09-16 08:20"))
+    engine._track_outcome(
+        setup_id, setup, computed, ctx, Candle(ts("2026-09-16 08:20"), 5656, 5656, 5640, 5641), ts("2026-09-16 08:20")
+    )
+    assert store.get_setup(setup_id)["outcome"] == "SL"
+    before = len(store.query("SELECT id FROM events WHERE setup_id = ?", (setup_id,)))
+    clock["now"] = ts("2026-09-16 08:30")
+    engine.process_symbol("XAUUSD")
+    assert len(store.query("SELECT id FROM events WHERE setup_id = ?", (setup_id,))) == before
+
+
+def test_gold_outcome_tracking_stops_at_the_friday_close(tmp_path):
+    engine, _store, _clock = build(tmp_path, clean_long_scenario())
+    setup = normalise(dict(BASE_SETUP))
+    triggered_at = ts("2026-09-18 10:00")  # Friday morning
+    horizon = engine._outcome_horizon(setup, triggered_at)
+    assert horizon == ts("2026-09-18 15:30")
+
+
+def test_model_2_outcome_tracking_stops_on_thursday(tmp_path):
+    engine, _store, _clock = build(tmp_path, clean_long_scenario())
+    setup = normalise(dict(BASE_SETUP, entry_model="MODEL_2", symbol="BTCUSD"))
+    triggered_at = ts("2026-09-15 07:00")  # Tuesday
+    assert engine._outcome_horizon(setup, triggered_at) == ts("2026-09-16 07:00")  # 24 h cap bites first
+    assert engine._outcome_horizon(setup, ts("2026-09-16 20:00")) == ts("2026-09-17 10:00")
+
+
+def test_pending_shadows_are_settled_in_bulk(tmp_path):
+    engine, store, clock = build(tmp_path, clean_long_scenario())
+    result = engine.submit(dict(BASE_SETUP))
+    store.execute("UPDATE setups SET state = 'EXPIRED' WHERE id = ?", (result["setup_id"],))
+    clock["now"] = ts("2026-09-17 09:00")
+    assert engine.evaluate_pending_shadows() == 1
+    assert engine.evaluate_pending_shadows() == 0
+    shadow = json.loads(store.get_setup(result["setup_id"])["shadow_json"])
+    assert shadow["result"] == "UNRESOLVED"  # the zone was tapped but nothing resolved in the window
+    assert engine.stats(7)["saves"] == 0
