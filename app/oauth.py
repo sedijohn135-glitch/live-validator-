@@ -122,6 +122,7 @@ class SQLiteOAuthProvider:
         requested = normalise_resource(params.resource)
         if requested is not None and requested != normalise_resource(self.resource_url):
             raise AuthorizeError("invalid_target", "unknown resource")
+        self._purge_expired()
         tx = secrets.token_urlsafe(32)
         payload = {
             "client_id": client.client_id,
@@ -138,6 +139,17 @@ class SQLiteOAuthProvider:
             (tx, client.client_id, json.dumps(payload), now, now + PENDING_TTL_S),
         )
         return f"{self.base_url}/oauth/login?tx={tx}"
+
+    def _purge_expired(self) -> None:
+        """Keep the pending/code/attempt tables bounded; none of these rows is useful once stale."""
+        now = self.clock()
+        self.store.execute("DELETE FROM oauth_pending WHERE expires_at < ?", (now,))
+        self.store.execute("DELETE FROM oauth_codes WHERE expires_at < ?", (now - 86400,))
+        self.store.execute(
+            "DELETE FROM login_attempts WHERE scope != 'global' AND COALESCE(locked_until, 0) < ? "
+            "AND COALESCE(first_failure, 0) < ?",
+            (now, now - GLOBAL_WINDOW_S),
+        )
 
     # -------------------------------------------------------------------- login
     def csrf_token(self, tx: str) -> str:

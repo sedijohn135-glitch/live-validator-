@@ -125,3 +125,36 @@ def test_stats_counts_saves_and_missed_wins(tmp_path):
     )
     stats = engine.stats(7)
     assert stats["inv"] == 1 and stats["saves"] == 1 and stats["blind_l"] == 1
+
+
+def test_unverified_pda_costs_a_score_point(tmp_path):
+    """P-3: a PDA the data cannot confirm must weigh against the setup at the trigger."""
+    scenario = clean_long_scenario()
+    engine, store, clock = build(tmp_path, scenario)
+    result = engine.submit(dict(BASE_SETUP, pda_type="BREAKER_BLOCK", entry_model="OTE"))
+    assert result["status"] == "ARMED", result["reasons"]
+    assert result["computed"]["pda_check"]["status"] == "UNVERIFIED"
+
+    clock["now"] = ts("2026-09-16 08:10") + 2
+    engine.process_symbol("XAUUSD")
+    row = store.get_setup(result["setup_id"])
+    assert row["state"] == "TRIGGERED"
+    breakdown = json.loads(row["computed_json"])["score_breakdown"]
+    assert any("P-3" in item for item in breakdown)
+    assert "PDA e paverifikuar" in next(t for t in texts(store) if "HYR TANI" in t)
+
+
+def test_a_stale_tap_holds_the_setup_instead_of_killing_it(tmp_path):
+    """T-04 only withholds the trigger; only §7's named cases end a setup as MISSED."""
+    scenario = clean_long_scenario()
+    # Replace the CISD bar with a quiet one: the tap stands, the confirmation never comes.
+    scenario.bars[-1] = Candle(scenario.bars[-1].t, 5653.2, 5653.6, 5653.0, 5653.3)
+    for _ in range(20):  # quiet bars well past CONFIRM_MAX_BARS
+        scenario.m5(5653.3, 5653.6, 5653.1, 5653.3)
+    scenario.quote("2026-09-16 08:15", 5653.3, 5653.5)
+    engine, store, clock = build(tmp_path, scenario)
+    result = engine.submit(dict(BASE_SETUP))
+    clock["now"] = ts("2026-09-16 08:56") + 2
+    engine.process_symbol("XAUUSD")
+    assert store.get_setup(result["setup_id"])["state"] in ("IN_ZONE", "TRIGGERED", "EXPIRED")
+    assert not any("KONFIRMIM I HUMBUR" in t for t in texts(store))

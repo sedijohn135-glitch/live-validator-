@@ -338,3 +338,19 @@ def test_background_tasks_start_once_across_many_requests(tmp_path):
         for _ in range(20):
             test_client.post("/mcp", json=rpc("tools/list"), headers=MCP_HEADERS)
         assert runtime.start_count == 1
+
+
+def test_stale_oauth_rows_are_purged(client):
+    """The pending, code and attempt tables must not grow for ever."""
+    store = client.runtime.store
+    registered = register_client(client)
+    _verifier, challenge = pkce()
+    authorize(client, registered, challenge)
+    store.execute("UPDATE oauth_pending SET expires_at = 0", ())
+    store.execute(
+        "INSERT INTO login_attempts(scope, failures, first_failure, locked_until) VALUES('ip:1.2.3.4',1,0,0)",
+        (),
+    )
+    authorize(client, registered, challenge)
+    assert len(store.query("SELECT tx FROM oauth_pending")) == 1
+    assert store.query_one("SELECT scope FROM login_attempts WHERE scope = 'ip:1.2.3.4'") is None

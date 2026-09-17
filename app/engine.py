@@ -174,8 +174,6 @@ class Engine:
             }
 
         result = evaluate_intake(setup, ctx)
-        if result.computed.get("pda_check", {}).get("status") == "UNVERIFIED":
-            ctx.levels["pda_unverified"] = True
 
         setup_id = self.id_factory(symbol, now)
         if not result.passed:
@@ -473,14 +471,11 @@ class Engine:
         data_check = t08_data(ctx, setup, state, event.candle.t)
         conflict = self._conflicting_trigger(setup)
 
+        # T-01…T-05, T-08 and T-09 only hold the setup back; MISSED is reserved for the cases
+        # validation-rules §7 names: a spread spike over two bars, a price that ran away, a
+        # confirmation that happened during an outage, and an active pause.
         core_ok = liq_ok and confirm_ok and fresh.passed and time_check.passed and data_check.passed
         if not core_ok or conflict:
-            if not liq_ok or not confirm_ok:
-                return "IN_ZONE"
-            if not fresh.passed:
-                return self._close(setup_id, setup, "MISSED", fresh.text, now, False, event.close_ts)
-            if not time_check.passed:
-                return "IN_ZONE"
             return "IN_ZONE"
 
         if self.paused():
@@ -507,7 +502,16 @@ class Engine:
                 return self._close(setup_id, setup, "MISSED", price.text, now, False, event.close_ts)
             return "IN_ZONE"
 
-        score, breakdown = compute_score(setup, ctx, candles, state, k, moment, self._holiday_today(ctx))
+        score, breakdown = compute_score(
+            setup,
+            ctx,
+            candles,
+            state,
+            k,
+            moment,
+            holiday_today=self._holiday_today(ctx),
+            pda_unverified=computed.get("pda_check", {}).get("status") == "UNVERIFIED",
+        )
         if score < self.settings.profile.score_min:
             return "IN_ZONE"
 

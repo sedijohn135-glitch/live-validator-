@@ -888,6 +888,7 @@ def compute_score(
     k: int,
     moment: datetime,
     holiday_today: bool = False,
+    pda_unverified: bool = False,
 ) -> tuple[int, list[str]]:
     breakdown: list[str] = []
     total = 0
@@ -933,7 +934,7 @@ def compute_score(
         if any(beyond(c.c, setup.pda_ce, setup.sign) for c in candles[state.tap_index : k + 1]):
             total -= 1
             breakdown.append("P-2 heavy")
-    if ctx.levels.get("pda_unverified"):
+    if pda_unverified:
         total -= 1
         breakdown.append("P-3 PDA e paverifikuar")
     if holiday_today:

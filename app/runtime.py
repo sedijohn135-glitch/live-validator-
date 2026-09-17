@@ -127,7 +127,6 @@ class Runtime:
             else None
         )
         ctx.levels["post_holiday"] = self.news.post_holiday(now)
-        ctx.levels["pda_unverified"] = False
         return ctx
 
     @property
