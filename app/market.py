@@ -322,3 +322,65 @@ __all__ = [
     "tolerance",
     "true_range",
 ]
+
+
+SNAPSHOT_COUNTS = {"D1": 30, "H4": 60, "H1": 72, "M15": 96, "M5": 96, "M1": 60}
+SNAPSHOT_FVG_TFS = ("M5", "M15", "H1", "H4")
+SNAPSHOT_SWING_TFS = ("M15", "H1")
+
+
+def snapshot_fvgs(store: CandleStore, symbol: str, timeframe: str, decimals: int, limit: int = 6) -> list[dict]:
+    """The last `limit` arrays of a timeframe, dropping failed ones unless they inverted."""
+    series = store.series(symbol, timeframe)
+    if len(series) < 3:
+        return []
+    out: list[dict] = []
+    for fvg in find_fvgs(series):
+        status = fvg_status(fvg, series)
+        if status == "failed":
+            continue
+        out.append(
+            {
+                "dir": "BULL" if fvg.direction == "BULL" else "BEAR",
+                "low": round(fvg.low, decimals),
+                "high": round(fvg.high, decimals),
+                "ce": round(fvg.ce, decimals),
+                "formed_at": ny_string(fvg.formed_at),
+                "kind": fvg.kind,
+                "status": status,
+            }
+        )
+    return out[-limit:]
+
+
+def build_snapshot(
+    symbol: str,
+    store: CandleStore,
+    now_ts: float,
+    decimals: int,
+    quote: dict | None,
+    levels: dict,
+    time_block: dict,
+) -> dict:
+    """The `market_snapshot` payload (mcp-oauth §6). Compact by construction: fixed counts, flat arrays."""
+    atr = {tf: store.atr(symbol, tf) for tf in ("M5", "M15", "H1", "D1")}
+    return {
+        "schema": "snapshot/1",
+        "symbol": symbol,
+        "source": "IC Markets cTrader (bid candles)",
+        "time": time_block,
+        "quote": quote,
+        "levels": {k: (round(v, decimals) if isinstance(v, (int, float)) else v) for k, v in levels.items()},
+        "atr": {k: (round(v, decimals) if v else None) for k, v in atr.items()},
+        "swings": {tf: swings_for_snapshot(store, symbol, tf) for tf in SNAPSHOT_SWING_TFS},
+        "fvgs": {tf: snapshot_fvgs(store, symbol, tf, decimals) for tf in SNAPSHOT_FVG_TFS},
+        "candles": {
+            tf: [c.as_list(decimals) for c in store.series(symbol, tf)[-count:]]
+            for tf, count in SNAPSHOT_COUNTS.items()
+        },
+        "notes": [
+            "times are New York",
+            "candle time = open time",
+            "use formed_at exactly in setup_submit",
+        ],
+    }

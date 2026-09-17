@@ -1,0 +1,676 @@
+"""Runtime glue: market polling, the engine tick, Telegram, news, the lease and `/health`.
+
+All background tasks start once from the MCP server lifespan and only run while this instance holds
+the engine lease, so a deploy overlap can never send a message twice (architecture §5).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import secrets
+import time
+from collections import deque
+from collections.abc import Callable
+from typing import Any
+
+from app import news as news_module
+from app import telegram as tg
+from app.config import TIMEFRAMES, Settings, load_settings
+from app.context import MarketContext
+from app.ctrader import AuthError, CTraderClient, DataError, Quote
+from app.engine import Engine
+from app.market import CandleStore, build_snapshot, session_levels
+from app.store import Store
+from app.timeutil import (
+    active_macro,
+    active_windows,
+    from_epoch,
+    in_lunch,
+    is_market_open,
+    next_windows,
+    ny_string,
+    to_ny,
+    to_utc,
+)
+
+logger = logging.getLogger(__name__)
+
+SNAPSHOT_TIMEFRAMES = ("D1", "H4", "H1", "M15", "M5", "M1")
+HISTORY_COUNTS = {"W1": 12, "D1": 300, "H4": 120, "H1": 300, "M30": 120, "M15": 300, "M5": 400, "M1": 1500}
+SNAPSHOT_CACHE_S = 15.0
+LEASE_TTL_S = 30.0
+LEASE_HEARTBEAT_S = 10.0
+IDLE_HEARTBEAT_S = 300.0
+OUTAGE_PAUSE_S = 20.0
+
+
+class SecretFilter(logging.Filter):
+    """Never let a token or password reach the logs (failure mode T7)."""
+
+    def __init__(self, secrets_provider: Callable[[], list[str]]) -> None:
+        super().__init__()
+        self._provider = secrets_provider
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # pragma: no cover - defensive
+            return True
+        for value in self._provider():
+            if value and len(value) >= 8 and value in message:
+                message = message.replace(value, "***")
+                record.msg = message
+                record.args = ()
+        return True
+
+
+class Runtime:
+    """Owns the live market state and every background task."""
+
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        store: Store | None = None,
+        ctrader: CTraderClient | None = None,
+        telegram: tg.TelegramClient | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.settings = settings or load_settings()
+        self.store = store or Store(self.settings.db_path)
+        self.clock = clock
+        self.candles = CandleStore(close_grace_s=self.settings.profile.close_grace_s)
+        self.quotes: dict[str, Quote] = {}
+        self.spread_samples: dict[str, deque] = {s: deque(maxlen=1800) for s in self.settings.symbols}
+        self.news = news_module.NewsCache()
+        self.ctrader = ctrader or CTraderClient(self.settings, self.store)
+        self.telegram = telegram
+        self.engine = Engine(self.settings, self.store, self.make_context, clock=self.clock)
+        self.holder = secrets.token_hex(8)
+        self.has_lease = False
+        self.data_status = "not_configured"
+        self.data_error = ""
+        self.last_quote_at = 0.0
+        self.last_snapshot: dict[str, tuple[float, dict]] = {}
+        self.started_at = self.clock()
+        self._last_outage_alert = 0.0
+        self._telegram_offset = 0
+        self._tasks: list[asyncio.Task] = []
+        self._history_loaded: set[tuple[str, str]] = set()
+        self.start_count = 0  # asserted by the "lifespan runs once" test
+
+    # --------------------------------------------------------------- context
+    def make_context(self, symbol: str, now: float | None = None) -> MarketContext:
+        now = self.clock() if now is None else now
+        quote = self.quotes.get(symbol)
+        profile = self.settings.profile
+        ctx = MarketContext(
+            symbol=symbol,
+            now_ts=now,
+            profile=profile,
+            sym=self.settings.symbol(symbol),
+            store=self.candles,
+            bid=quote.bid if quote else None,
+            ask=quote.ask if quote else None,
+            quote_ts=quote.ts if quote else None,
+            spread_samples=list(self.spread_samples.get(symbol, ())),
+            paused=self.paused,
+            data_ok=self.data_status == "ok",
+        )
+        ctx.levels = session_levels(self.candles, symbol, now)
+        ctx.news_feed_ok = self.news.ok or not self.settings.news_filter
+        ctx.news_blackout = (
+            self.news.blackout(now, profile.news_before_min, profile.news_after_min)
+            if self.settings.news_filter
+            else None
+        )
+        ctx.levels["post_holiday"] = self.news.post_holiday(now)
+        ctx.levels["pda_unverified"] = False
+        return ctx
+
+    @property
+    def paused(self) -> bool:
+        return self.engine.paused() or self.data_status in ("down", "auth_error")
+
+    # ----------------------------------------------------------------- notify
+    def notify(self, key: str, text: str) -> None:
+        """Queue a system message. `key` keeps repeats out of the outbox."""
+        if not self.settings.telegram_chat_id:
+            return
+        body = getattr(tg, text, text)
+        self.store.queue_message(f"sys:{key}", self.settings.telegram_chat_id, body, self.clock())
+
+    # ------------------------------------------------------------ market data
+    async def refresh_quotes(self) -> None:
+        symbols = self._symbols_to_watch()
+        if not symbols:
+            return
+        try:
+            quotes = await self.ctrader.quotes(symbols)
+        except AuthError as exc:
+            self._on_auth_error(exc)
+            return
+        except DataError as exc:
+            self._on_data_error(exc)
+            return
+        now = self.clock()
+        for symbol, quote in quotes.items():
+            self.quotes[symbol] = quote
+            self.spread_samples.setdefault(symbol, deque(maxlen=1800)).append(quote.spread)
+        if quotes:
+            self.last_quote_at = now
+            self._on_data_ok()
+
+    def _symbols_to_watch(self) -> list[str]:
+        active = {row["symbol"] for row in self.store.setups_in_state(("ARMED", "IN_ZONE", "TRIGGERED"))}
+        recent = {s for s, (stamp, _payload) in self.last_snapshot.items() if self.clock() - stamp < 300}
+        return [s for s in self.settings.symbols if s in active or s in recent]
+
+    async def refresh_candles(self, symbol: str, timeframes: tuple[str, ...], count: int = 3) -> None:
+        now = self.clock()
+        for timeframe in timeframes:
+            try:
+                bars = await self.ctrader.candles(symbol, timeframe, count=count, end_ts=now)
+            except AuthError as exc:
+                self._on_auth_error(exc)
+                return
+            except DataError as exc:
+                self._on_data_error(exc)
+                return
+            if bars:
+                keep = HISTORY_COUNTS.get(timeframe, 400)
+                self.candles.merge(symbol, timeframe, bars, now, keep=keep)
+        self._on_data_ok()
+
+    async def ensure_history(self, symbol: str, timeframes: tuple[str, ...] | None = None) -> None:
+        """Fetch the deep history a snapshot or a newly armed setup needs."""
+        wanted = timeframes or tuple(HISTORY_COUNTS)
+        for timeframe in wanted:
+            if (symbol, timeframe) in self._history_loaded:
+                continue
+            await self.refresh_candles(symbol, (timeframe,), count=HISTORY_COUNTS.get(timeframe, 300))
+            self._history_loaded.add((symbol, timeframe))
+
+    def due_timeframes(self, symbol: str, now: float) -> tuple[str, ...]:
+        """Timeframes whose newest bar should have closed by now."""
+        needed = {"M1", "M5", "M15", "H1", "D1"}
+        for row in self.store.setups_in_state(("ARMED", "IN_ZONE", "TRIGGERED"), symbol):
+            payload = json.loads(row["payload_json"])
+            needed.update({"M1", payload.get("ltf", "M5"), payload.get("pda_timeframe", "M5")})
+            if payload.get("invalidation_timeframe"):
+                needed.add(payload["invalidation_timeframe"])
+        due = []
+        grace = self.settings.profile.close_grace_s
+        for timeframe in needed:
+            seconds = TIMEFRAMES[timeframe]
+            last = self.candles.last(symbol, timeframe)
+            expected_open = ((now - grace) // seconds) * seconds - seconds
+            if last is None or last.t < expected_open:
+                due.append(timeframe)
+        return tuple(due)
+
+    # ---------------------------------------------------------- data status
+    def _on_auth_error(self, exc: Exception) -> None:
+        self.data_status = "auth_error"
+        self.data_error = str(exc)[:200]
+        self.notify("auth_expired", "AUTH_EXPIRED")
+
+    def _on_data_error(self, exc: Exception) -> None:
+        now = self.clock()
+        self.data_status = "down"
+        self.data_error = str(exc)[:200]
+        market_open = any(is_market_open(s, from_epoch(now)) for s in self.settings.symbols)
+        if not market_open:
+            return
+        if now - self._last_outage_alert >= max(3600.0, self.settings.profile.data_outage_alert_s):
+            self._last_outage_alert = now
+            self.store.queue_message(
+                f"sys:data_down:{int(now // 3600)}",
+                self.settings.telegram_chat_id,
+                tg.DATA_DOWN.format(reason=tg.esc(self.data_error or "pa përgjigje")),
+                now,
+            )
+
+    def _on_data_ok(self) -> None:
+        was_down = self.data_status in ("down", "auth_error")
+        self.data_status = "ok"
+        self.data_error = ""
+        if was_down:
+            self.store.queue_message(
+                f"sys:restored:{int(self.clock())}",
+                self.settings.telegram_chat_id,
+                tg.RESTORED.format(summary="setup-et u rikontrolluan"),
+                self.clock(),
+            )
+
+    # ------------------------------------------------------------------ ticks
+    async def tick(self) -> None:
+        """One engine pass: quotes, due candles, then the state machine per symbol."""
+        now = self.clock()
+        await self.refresh_quotes()
+        for symbol in self.settings.symbols:
+            if not self._is_watched(symbol):
+                continue
+            due = self.due_timeframes(symbol, now)
+            if due:
+                await self.refresh_candles(symbol, due, count=3)
+        if self.data_status != "ok" and self.last_quote_at and now - self.last_quote_at > OUTAGE_PAUSE_S:
+            return  # PAUSED: no triggers without data
+        for symbol in self.settings.symbols:
+            if self._is_watched(symbol):
+                self.engine.process_symbol(symbol, self.clock())
+
+    def _is_watched(self, symbol: str) -> bool:
+        return symbol in self._symbols_to_watch()
+
+    # -------------------------------------------------------------- snapshot
+    async def snapshot(self, symbol: str) -> dict[str, Any]:
+        now = self.clock()
+        cached = self.last_snapshot.get(symbol)
+        if cached and now - cached[0] < SNAPSHOT_CACHE_S:
+            return cached[1]
+        await self.ensure_history(symbol)
+        await self.refresh_candles(symbol, SNAPSHOT_TIMEFRAMES, count=3)
+        await self.refresh_quotes_for(symbol)
+        decimals = self.settings.symbol(symbol).display_decimals
+        quote = self.quotes.get(symbol)
+        payload = build_snapshot(
+            symbol,
+            self.candles,
+            now,
+            decimals,
+            {
+                "bid": round(quote.bid, decimals),
+                "ask": round(quote.ask, decimals),
+                "spread": round(quote.spread, decimals),
+                "age_s": int(max(0, now - quote.ts)),
+            }
+            if quote
+            else None,
+            session_levels(self.candles, symbol, now),
+            self.time_block(symbol, now),
+        )
+        self.last_snapshot[symbol] = (now, payload)
+        return payload
+
+    async def prepare_for_submit(self, symbol: str) -> None:
+        """Fresh data before the intake gate runs: G-02 must never arm on stale or missing candles."""
+        await self.ensure_history(symbol)
+        await self.refresh_candles(symbol, SNAPSHOT_TIMEFRAMES, count=3)
+        await self.refresh_quotes_for(symbol)
+
+    async def refresh_quotes_for(self, symbol: str) -> None:
+        try:
+            quotes = await self.ctrader.quotes([symbol])
+        except AuthError as exc:
+            self._on_auth_error(exc)
+            return
+        except DataError as exc:
+            self._on_data_error(exc)
+            return
+        for name, quote in quotes.items():
+            self.quotes[name] = quote
+            self.spread_samples.setdefault(name, deque(maxlen=1800)).append(quote.spread)
+        if quotes:
+            self.last_quote_at = self.clock()
+            self._on_data_ok()
+
+    def time_block(self, symbol: str, now: float) -> dict[str, Any]:
+        moment = from_epoch(now)
+        ny = to_ny(moment)
+        profile = self.settings.profile
+        return {
+            "utc": to_utc(moment).strftime("%Y-%m-%d %H:%M"),
+            "ny": ny.strftime("%Y-%m-%d %H:%M"),
+            "weekday_ny": ny.strftime("%A"),
+            "market_open": is_market_open(symbol, moment),
+            "active_windows": active_windows(moment),
+            "active_macro": active_macro(moment),
+            "next_windows": [list(pair) for pair in next_windows(moment)],
+            "lunch_block": in_lunch(moment),
+            "news_blackout": self.news.blackout(now, profile.news_before_min, profile.news_after_min)
+            if self.settings.news_filter
+            else None,
+            "upcoming_news": self.news.upcoming(now) if self.settings.news_filter else [],
+        }
+
+    # ---------------------------------------------------------------- health
+    def health(self) -> dict[str, Any]:
+        now = self.clock()
+        active = self.store.setups_in_state(("ARMED", "IN_ZONE", "TRIGGERED"))
+        return {
+            "ok": True,
+            "version": self.settings.profile.name,
+            "uptime_s": int(now - self.started_at),
+            "data": {
+                "ctrader": self.data_status,
+                "last_quote_age_s": int(now - self.last_quote_at) if self.last_quote_at else None,
+                "symbols": sorted(self.ctrader.symbols),
+            },
+            "telegram": "ok" if self.settings.telegram_configured() else "not_configured",
+            "volume": "ok" if self.settings.on_volume else "missing",
+            "active_setups": len(active),
+            "paused": self.paused,
+            "warnings": self.settings.warnings + self.ctrader.warnings,
+        }
+
+    # ----------------------------------------------------------- background
+    async def run_forever(self) -> None:
+        """Start every background task once. Cancelled by the lifespan on shutdown."""
+        self.start_count += 1
+        self._tasks = [
+            asyncio.create_task(self._lease_loop(), name="lease"),
+            asyncio.create_task(self._engine_loop(), name="engine"),
+            asyncio.create_task(self._sender_loop(), name="telegram-sender"),
+            asyncio.create_task(self._commands_loop(), name="telegram-commands"),
+            asyncio.create_task(self._news_loop(), name="news"),
+            asyncio.create_task(self._report_loop(), name="daily-report"),
+        ]
+
+    async def stop(self, timeout: float = 5.0) -> None:
+        """Cancel every task and give up waiting after `timeout`.
+
+        A task cancelled inside a nested MCP client can fail to unwind cleanly, and shutdown must
+        never be the thing that hangs a deploy.
+        """
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            with contextlib.suppress(Exception):
+                await asyncio.wait(self._tasks, timeout=timeout)
+        self._tasks = []
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.ctrader.aclose(), timeout=timeout)
+
+    async def _lease_loop(self) -> None:
+        while True:
+            self.has_lease = self.store.acquire_lease("engine", self.holder, LEASE_TTL_S, self.clock())
+            await asyncio.sleep(LEASE_HEARTBEAT_S)
+
+    async def _engine_loop(self) -> None:
+        try:
+            await self._startup()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("startup failed")
+        last_idle = 0.0
+        while True:
+            try:
+                if self.has_lease:
+                    if self._symbols_to_watch():
+                        await self.tick()
+                    elif self.clock() - last_idle > IDLE_HEARTBEAT_S:
+                        last_idle = self.clock()
+                        await self._heartbeat()
+            except Exception:
+                logger.exception("engine tick failed")
+            await asyncio.sleep(self.settings.profile.quote_poll_s)
+
+    async def _startup(self) -> None:
+        if not self.settings.on_volume and self.settings.warnings:
+            self.notify("no_volume", "NO_VOLUME")
+        if self.ctrader.load_credentials() is None:
+            self.data_status = "not_configured"
+            return
+        try:
+            info = await self.ctrader.discover()
+        except AuthError as exc:
+            self._on_auth_error(exc)
+            return
+        except Exception as exc:  # noqa: BLE001 - startup must never crash the process
+            self._on_data_error(exc)
+            return
+        if info["profile"] == "trading":
+            self.notify("trading_profile", "TRADING_PROFILE")
+        self._on_data_ok()
+
+    async def _heartbeat(self) -> None:
+        try:
+            await self.ctrader.call("get_version")
+            self._on_data_ok()
+        except AuthError as exc:
+            self._on_auth_error(exc)
+        except Exception as exc:  # noqa: BLE001
+            self._on_data_error(exc)
+
+    async def _sender_loop(self) -> None:
+        while True:
+            try:
+                client = self._telegram_client()
+                if client is not None and self.has_lease:
+                    sender = tg.OutboxSender(self.store, client, self.settings.telegram_chat_id)
+                    await sender.drain_once()
+            except Exception:
+                logger.exception("telegram sender failed")
+            await asyncio.sleep(2.0)
+
+    async def _commands_loop(self) -> None:
+        while True:
+            try:
+                client = self._telegram_client()
+                if client is not None and self.has_lease:
+                    updates = await client.get_updates(self._telegram_offset, timeout=25)
+                    for update in updates:
+                        self._telegram_offset = max(self._telegram_offset, int(update.get("update_id", 0)) + 1)
+                        await self.handle_update(update, client)
+                    if not updates:
+                        # A server (or a fake) that answers immediately must not spin the loop.
+                        await asyncio.sleep(1.0)
+                else:
+                    await asyncio.sleep(5.0)
+            except Exception:
+                logger.exception("telegram command poller failed")
+                await asyncio.sleep(5.0)
+
+    async def _news_loop(self) -> None:
+        while True:
+            if self.settings.news_filter:
+                await news_module.fetch(self.settings.news_feed_url, self.news, self.clock())
+            await asyncio.sleep(news_module.REFRESH_S)
+
+    async def _report_loop(self) -> None:
+        while True:
+            now = self.clock()
+            ny = to_ny(from_epoch(now))
+            if self.has_lease and ny.hour == 17 and ny.minute == 5:
+                self.send_daily_report()
+                await asyncio.sleep(90)
+            await asyncio.sleep(30)
+
+    def send_daily_report(self) -> None:
+        stats = self.engine.stats(1)
+        date = to_ny(from_epoch(self.clock())).strftime("%Y-%m-%d")
+        text = tg.daily_report({**stats, "date": date})
+        self.store.queue_message(f"report:{date}", self.settings.telegram_chat_id, text, self.clock())
+
+    def _telegram_client(self) -> tg.TelegramClient | None:
+        if self.telegram is not None:
+            return self.telegram
+        if not self.settings.telegram_bot_token:
+            return None
+        self.telegram = tg.TelegramClient(self.settings.telegram_bot_token)
+        return self.telegram
+
+    # -------------------------------------------------------------- commands
+    async def handle_update(self, update: dict[str, Any], client: tg.TelegramClient) -> None:
+        message = update.get("message") or {}
+        chat_id = str((message.get("chat") or {}).get("id") or "")
+        text = (message.get("text") or "").strip()
+        if not text:
+            return
+        owner = self.settings.telegram_chat_id
+        if not owner:
+            if text.startswith("/start"):
+                await client.send_message(
+                    chat_id,
+                    "Chat ID: <b>" + tg.esc(chat_id) + "</b>\nVendose te Railway si TELEGRAM_CHAT_ID.",
+                )
+            return
+        if chat_id != owner:
+            return  # strangers are ignored silently
+        if text.startswith("/ctrader"):
+            message_id = message.get("message_id")
+            if message_id:
+                await client.delete_message(chat_id, int(message_id))
+        reply = await self.run_command(text)
+        if reply:
+            await client.send_message(owner, reply)
+
+    async def run_command(self, text: str) -> str:
+        command, _, argument = text.partition(" ")
+        command = command.lower().lstrip("/").split("@")[0]
+        argument = argument.strip()
+        if command == "start":
+            return "✅ Je pronari. Shkruaj /help për komandat."
+        if command == "help":
+            return tg.HELP_TEXT
+        if command == "status":
+            return self._status_text()
+        if command == "active":
+            return self._active_text()
+        if command == "cancel":
+            result = self.engine.cancel(argument)
+            return f"Anulimi: {tg.esc(result['status'])} ({tg.esc(argument)})"
+        if command == "pause":
+            self.engine.set_paused(True)
+            return "⏸️ Pauzë: asnjë mesazh HYR derisa të shkruash /resume."
+        if command == "resume":
+            self.engine.set_paused(False)
+            return "▶️ Monitorimi vazhdoi."
+        if command == "stats":
+            days = 30 if argument.strip() == "30" else 7
+            stats = self.engine.stats(days)
+            return tg.daily_report({**stats, "date": f"{days} ditë"})
+        if command == "rules":
+            return self._rules_text()
+        if command == "selftest":
+            return await self.selftest()
+        if command == "ctrader":
+            return await self._ctrader_command(argument)
+        if command == "revoke_all":
+            from app.oauth import SQLiteOAuthProvider
+
+            provider = SQLiteOAuthProvider(self.settings, self.store)
+            count = provider.revoke_all()
+            return f"🔌 U shkëputën {count} tokena. Lidhe Gemini-n sërish kur të duash."
+        return "Komandë e panjohur. /help"
+
+    async def _ctrader_command(self, argument: str) -> str:
+        if argument.lower() == "reset":
+            await self.ctrader.swap_credentials(None)
+            return "↩️ U kthye te variablat e Railway.\n\n" + await self.selftest()
+        if not argument:
+            return "Dërgo: /ctrader KONFIGURIMI (ose /ctrader reset)"
+        credentials = await self.ctrader.swap_credentials(argument)
+        if credentials is None:
+            return "❌ Konfigurimi s'u kuptua. Kopjoje sërish nga cTrader Web → Settings → Remote MCP."
+        self._history_loaded.clear()
+        return f"🔑 Tokeni u rinovua ({tg.esc(credentials.masked)}).\n\n" + await self.selftest()
+
+    def _status_text(self) -> str:
+        health = self.health()
+        lines = [
+            "<b>Gjendja</b>",
+            f"cTrader: {tg.esc(health['data']['ctrader'])}",
+            f"Çmimi i fundit: {health['data']['last_quote_age_s']} s më parë"
+            if health["data"]["last_quote_age_s"] is not None
+            else "Çmimi i fundit: -",
+            f"Setup aktive: {health['active_setups']}",
+            f"Telegram: {tg.esc(health['telegram'])} · Volume: {tg.esc(health['volume'])}",
+            f"Profili: {tg.esc(self.settings.profile.name)} · Uptime: {health['uptime_s']} s",
+            f"Pauzë: {'po' if health['paused'] else 'jo'}",
+        ]
+        if health["warnings"]:
+            lines.append("⚠️ " + tg.esc("; ".join(health["warnings"][:3])))
+        return "\n".join(lines)
+
+    def _active_text(self) -> str:
+        overview = self.engine.status()
+        if not overview["active"]:
+            return "S'ka setup aktive."
+        lines = ["<b>Setup aktive</b>"]
+        for row in overview["active"]:
+            lines.append(
+                f"{tg.esc(row['setup_id'])} · {tg.esc(row['symbol'])} {tg.esc(row['direction'])} "
+                f"· {tg.esc(row['state'])} · skadon {tg.esc(row['expires_at_ny'] or '-')}"
+            )
+        return "\n".join(lines)
+
+    def _rules_text(self) -> str:
+        profile = self.settings.profile
+        return (
+            f"<b>Pragjet ({tg.esc(profile.name)})</b>\n"
+            f"RR plan ≥ {profile.rr_min_plan:g} · RR në hyrje ≥ {profile.rr_min_trigger:g}\n"
+            f"Checklist ≥ {profile.checklist_min_pos} pozitive, ≤ {profile.checklist_max_neg} negative\n"
+            f"Score ≥ {profile.score_min}/7 · CE si nivel i fortë: {'po' if profile.ce_hard_fvg else 'jo'}\n"
+            f"Jetëgjatësia: {profile.max_setup_lifetime_h:g} orë · ndjekja pas hyrjes "
+            f"{profile.outcome_horizon_h:g} orë\n"
+            f"E premte (XAUUSD) deri {profile.friday_cutoff_ny} NY · lajme "
+            f"{profile.news_before_min}/{profile.news_after_min} min"
+        )
+
+    async def selftest(self) -> str:
+        """The `/selftest` report of ctrader-remote-mcp §8, one ✅/❌ per line."""
+        lines = ["<b>SELFTEST</b>"]
+        credentials = self.ctrader.credentials or self.ctrader.load_credentials()
+        if credentials is None:
+            lines.append("❌ Kredencialet e cTrader mungojnë (CTRADER_MCP_CONFIG ose /ctrader)")
+        else:
+            lines.append(f"✅ Kredencialet: {tg.esc(credentials.source)} · {tg.esc(credentials.masked)}")
+            try:
+                info = await self.ctrader.discover()
+                lines.append(f"✅ get_version: {tg.esc(self.ctrader.version)}")
+                lines.append(
+                    f"{'⚠️' if info['profile'] == 'trading' else '✅'} Profili: {tg.esc(info['profile'])}"
+                )
+            except Exception as exc:  # noqa: BLE001 - the report must always render
+                lines.append(f"❌ Lidhja: {tg.esc(str(exc)[:120])}")
+        for symbol in self.settings.symbols:
+            info = self.ctrader.symbols.get(symbol)
+            if info is None:
+                lines.append(f"❌ {tg.esc(symbol)}: s'u gjet te cTrader")
+                continue
+            decimals = self.settings.symbol(symbol).display_decimals
+            lines.append(
+                f"✅ {tg.esc(symbol)}: id {info.symbol_id} · {info.digits} shifra"
+                + (" (kalibruar)" if info.calibrated else "")
+            )
+            quote = self.quotes.get(symbol)
+            if quote is None:
+                with contextlib.suppress(Exception):
+                    await self.refresh_quotes_for(symbol)
+                quote = self.quotes.get(symbol)
+            if quote is None:
+                lines.append(f"❌ {tg.esc(symbol)}: s'ka çmim live")
+            else:
+                age = int(max(0, self.clock() - quote.ts))
+                lines.append(
+                    f"✅ {tg.esc(symbol)}: bid {quote.bid:.{decimals}f} / ask {quote.ask:.{decimals}f} "
+                    f"· spread {quote.spread:.{decimals}f} · {age}s"
+                )
+                if age > 5:
+                    lines.append(f"⚠️ {tg.esc(symbol)}: ora e serverit ndryshon me {age}s")
+            with contextlib.suppress(Exception):
+                await self.ensure_history(symbol, ("M1", "M5", "M15", "H1", "D1"))
+            for timeframe in ("M1", "M5", "M15", "H1", "D1"):
+                candle = self.candles.last(symbol, timeframe)
+                if candle is None:
+                    lines.append(f"❌ {tg.esc(symbol)} {timeframe}: s'ka qirinj")
+                    continue
+                aligned = candle.t % TIMEFRAMES[timeframe] == 0 if timeframe != "D1" else True
+                mark = "✅" if aligned else "⚠️"
+                lines.append(f"{mark} {tg.esc(symbol)} {timeframe}: {tg.esc(ny_string(candle.t))} NY")
+        lines.append(
+            ("✅" if self.settings.telegram_configured() else "❌") + " Telegram i konfiguruar"
+        )
+        lines.append(("✅" if self.settings.on_volume else "⚠️") + " Volume te Railway")
+        lines.append(f"✅ URL publike: {tg.esc(self.settings.public_base_url)}/mcp")
+        lines.append(
+            ("✅" if self.news.ok else "⚠️") + " Filtri i lajmeve"
+            + ("" if self.settings.news_filter else " (i fikur)")
+        )
+        lines.append(f"✅ Profili aktiv: {tg.esc(self.settings.profile.name)}")
+        return "\n".join(lines)
