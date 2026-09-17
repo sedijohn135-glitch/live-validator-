@@ -35,6 +35,7 @@ class FakeCTrader:
     unknown_id_empties_batch: bool = True
     rate_limit_hits: int = 0
     include_trading: bool = True
+    spot_param: str = "symbolIds"  # some rest-proxy builds call it `symbolId` and still take a list
 
     def build(self) -> MCPServer:
         server = MCPServer(name="fake-ctrader", version="1.0.18")
@@ -51,18 +52,29 @@ class FakeCTrader:
             self._maybe_fail()
             return json.dumps({"symbols": SYMBOLS})
 
-        @server.tool()
-        def get_spot_prices(symbolIds: list[int]) -> str:  # noqa: N803 - mirrors the real API
-            self.calls.append(("get_spot_prices", {"symbolIds": symbolIds}))
+        def spot_prices(ids: list[int]) -> str:
+            self.calls.append(("get_spot_prices", {self.spot_param: ids}))
             self._maybe_fail()
             known = {s["symbolId"] for s in SYMBOLS}
-            if self.unknown_id_empties_batch and any(i not in known for i in symbolIds):
+            if self.unknown_id_empties_batch and any(i not in known for i in ids):
                 return json.dumps({"prices": []})  # batch poisoning, exactly as documented
             prices = [
                 {"symbolId": i, "bid": self.bid_raw, "ask": self.ask_raw, "timestamp": self.bar_start_ms}
-                for i in symbolIds
+                for i in ids
             ]
             return json.dumps({"prices": prices})
+
+        if self.spot_param == "symbolId":
+
+            @server.tool(name="get_spot_prices")
+            def get_spot_prices_singular(symbolId: list[int]) -> str:  # noqa: N803 - mirrors the real API
+                return spot_prices(symbolId)
+
+        else:
+
+            @server.tool(name="get_spot_prices")
+            def get_spot_prices(symbolIds: list[int]) -> str:  # noqa: N803 - mirrors the real API
+                return spot_prices(symbolIds)
 
         @server.tool()
         def get_trendbars(

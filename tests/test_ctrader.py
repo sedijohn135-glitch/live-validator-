@@ -371,3 +371,33 @@ def test_a_missing_symbol_warning_names_what_ctrader_offers(tmp_path):
         assert "XAUUSD" in warning  # the near-miss cTrader does offer
 
     with_client(tmp_path, body)
+
+
+def test_argument_names_follow_the_live_schema(tmp_path):
+    """Failure mode C4 in the field: this broker's build names the batch `symbolId`, not `symbolIds`."""
+
+    async def body(client, fake, _store):
+        assert "symbolId" in client._properties("get_spot_prices")
+        args = client.build_args("get_spot_prices", {"symbol_ids": [41, 101]})
+        assert args == {"symbolId": [41, 101]}
+        quotes = await client.quotes(["XAUUSD", "BTCUSD"])
+        assert quotes["XAUUSD"].bid == pytest.approx(5654.52)
+
+    with_client(tmp_path, body, fake=FakeCTrader(spot_param="symbolId"))
+
+
+def test_argument_names_still_work_on_the_documented_build(tmp_path):
+    async def body(client, _fake, _store):
+        args = client.build_args("get_spot_prices", {"symbol_ids": [41]})
+        assert args == {"symbolIds": [41]}
+        assert (await client.quotes(["XAUUSD"]))["XAUUSD"].bid == pytest.approx(5654.52)
+
+    with_client(tmp_path, body)
+
+
+def test_a_scalar_argument_is_never_sent_as_a_list(tmp_path):
+    async def body(client, _fake, _store):
+        args = client.build_args("get_trendbars", {"symbol_id": 41, "period": "M_5", "from": 1, "to": 2})
+        assert args == {"symbolId": 41, "period": "M_5", "fromTimestamp": 1, "toTimestamp": 2}
+
+    with_client(tmp_path, body)

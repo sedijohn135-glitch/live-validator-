@@ -30,6 +30,21 @@ KNOWN_TRADING_TOOLS = frozenset(
 
 HISTORICAL_TOOLS = frozenset({"get_trendbars"})
 
+# The live `tools/list` schema is the authority on argument names (ctrader reference §5): builds
+# differ, e.g. `symbolId` carrying an array where an older doc said `symbolIds`. For each logical
+# argument we try these names in order and keep the first the server actually declares.
+ARG_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "get_spot_prices": {
+        "symbol_ids": ("symbolIds", "symbolId", "symbol_ids", "symbol_id", "ids", "symbols"),
+    },
+    "get_trendbars": {
+        "symbol_id": ("symbolId", "symbol_id", "symbolIds", "id"),
+        "period": ("period", "timeframe", "granularity"),
+        "from": ("fromTimestamp", "from_timestamp", "from", "fromDate", "startTimestamp"),
+        "to": ("toTimestamp", "to_timestamp", "to", "toDate", "endTimestamp"),
+    },
+}
+
 PERIODS = {
     "M1": "M_1",
     "M5": "M_5",
@@ -230,6 +245,7 @@ class CTraderClient:
 
     credentials: Credentials | None = None
     tool_names: tuple[str, ...] = ()
+    tool_schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
     symbols: dict[str, SymbolInfo] = field(default_factory=dict)
     version: str = ""
     profile_kind: str = "unknown"
@@ -334,6 +350,11 @@ class CTraderClient:
         tools = getattr(listed, "tools", listed)
         names = tuple(sorted(getattr(t, "name", str(t)) for t in tools))
         self.tool_names = names
+        self.tool_schemas = {
+            getattr(t, "name", ""): (getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {})
+            for t in tools
+            if getattr(t, "name", "") in ALLOWED_TOOLS
+        }
         self.profile_kind = "trading" if KNOWN_TRADING_TOOLS & set(names) else "data"
         if self.store:
             self.store.set_json("ctrader_tools", list(names))
@@ -397,6 +418,23 @@ class CTraderClient:
         table = PRECISION_TABLE.get(symbol.upper())
         return table if table is not None else override
 
+    # ------------------------------------------------------------- arguments
+    def _properties(self, tool: str) -> dict[str, Any]:
+        schema = self.tool_schemas.get(tool) or {}
+        properties = schema.get("properties")
+        return properties if isinstance(properties, dict) else {}
+
+    def build_args(self, tool: str, values: dict[str, Any]) -> dict[str, Any]:
+        """Map our logical argument names onto whatever this server's schema actually declares."""
+        properties = self._properties(tool)
+        aliases = ARG_ALIASES.get(tool, {})
+        out: dict[str, Any] = {}
+        for logical, value in values.items():
+            candidates = aliases.get(logical, (logical,))
+            name = next((c for c in candidates if c in properties), candidates[0])
+            out[name] = _fit_type(properties.get(name), value)
+        return out
+
     # --------------------------------------------------------------- decoding
     def decode(self, symbol: str, raw: float) -> float | None:
         """Pipettes → display price, with band calibration (ctrader reference §6)."""
@@ -433,7 +471,7 @@ class CTraderClient:
             by_id[info.symbol_id] = name
         if not ids:
             raise DataError("asnjë simbol i kërkuar nuk u zgjidh te cTrader")
-        payload = await self.call("get_spot_prices", {"symbolIds": ids})
+        payload = await self.call("get_spot_prices", self.build_args("get_spot_prices", {"symbol_ids": ids}))
         out: dict[str, Quote] = {}
         for entry in _as_list(payload, "prices"):
             symbol_id = entry.get("symbolId") or entry.get("id")
@@ -468,12 +506,15 @@ class CTraderClient:
             chunk_end = min(end, cursor + MAX_WINDOW_S)
             payload = await self.call(
                 "get_trendbars",
-                {
-                    "symbolId": info.symbol_id,
-                    "period": period,
-                    "fromTimestamp": int(cursor * 1000),
-                    "toTimestamp": int(chunk_end * 1000),
-                },
+                self.build_args(
+                    "get_trendbars",
+                    {
+                        "symbol_id": info.symbol_id,
+                        "period": period,
+                        "from": int(cursor * 1000),
+                        "to": int(chunk_end * 1000),
+                    },
+                ),
             )
             for bar in _as_list(payload, "trendbars", "bars"):
                 candle = self._decode_bar(symbol, bar, tf, end)
@@ -529,6 +570,16 @@ def _default_connector(url: str, token: str):
                 yield client
 
     return run()
+
+
+def _fit_type(spec: Any, value: Any) -> Any:
+    """Wrap or unwrap a value so it matches the array-ness the schema declares."""
+    declared = (spec or {}).get("type") if isinstance(spec, dict) else None
+    if declared == "array" and not isinstance(value, list):
+        return [value]
+    if declared in ("integer", "number", "string") and isinstance(value, list):
+        return value[0] if len(value) == 1 else value
+    return value
 
 
 def _error_text(result: Any) -> str:
