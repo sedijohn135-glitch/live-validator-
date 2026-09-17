@@ -360,7 +360,9 @@ class Runtime:
             "symbols_resolved": sorted(self.ctrader.symbols),
             "candles_held": bars,
         }
-        if not usable:
+        # The reason belongs in the answer whenever the feed is unhealthy, not only when it is
+        # unusable: a snapshot that still works off cached bars must still say what broke.
+        if not usable or self.data_status != "ok":
             block["detail"] = self.data_error or (
                 "cTrader nuk po kthen të dhëna — kontrollo CTRADER_MCP_CONFIG dhe dërgo /selftest"
             )
@@ -422,6 +424,7 @@ class Runtime:
                 "last_quote_age_s": int(now - self.last_quote_at) if self.last_quote_at else None,
                 "symbols": sorted(self.ctrader.symbols),
                 "account": self.ctrader.credentials.account if self.ctrader.credentials else "",
+                "detail": self.data_error if self.data_status != "ok" else "",
             },
             "telegram": "ok" if self.settings.telegram_configured() else "not_configured",
             "mcp_auth": "open" if self.settings.mcp_open else "oauth",
@@ -664,6 +667,7 @@ class Runtime:
             f"Çmimi i fundit: {health['data']['last_quote_age_s']} s më parë"
             if health["data"]["last_quote_age_s"] is not None
             else "Çmimi i fundit: -",
+            *([f"Arsyeja: {tg.esc(health['data']['detail'])}"] if health["data"]["detail"] else []),
             f"Setup aktive: {health['active_setups']}",
             f"Telegram: {tg.esc(health['telegram'])} · Volume: {tg.esc(health['volume'])}",
             f"Profili: {tg.esc(self.settings.profile.name)} · Uptime: {health['uptime_s']} s",

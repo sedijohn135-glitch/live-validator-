@@ -349,3 +349,24 @@ def test_h4_is_reported_but_never_blocks_a_snapshot(tmp_path):
     thin_block = thin.data_block("XAUUSD", True, now)
     assert thin_block["candles_held"]["H4"] == 0
     assert thin_block["usable"] is True
+
+
+def test_a_down_feed_always_says_why(tmp_path):
+    """Without Railway logs the owner has only /status and the snapshot: both must carry the reason."""
+    runtime, _fake, _tg = make_runtime(tmp_path)
+    now = ts("2026-09-17 09:10")
+    runtime.clock = lambda: now
+    load_candles(runtime, clean_long_scenario(day="2026-09-17"), now)
+    runtime._on_data_error(rules_data_error("get_spot_prices refused: market data unavailable"))
+
+    block = runtime.data_block("XAUUSD", True, now)
+    assert block["usable"] is True  # cached bars still serve
+    assert "market data unavailable" in block["detail"]
+    assert "market data unavailable" in runtime.health()["data"]["detail"]
+    assert "Arsyeja:" in runtime._status_text()
+
+
+def rules_data_error(message: str):
+    from app.ctrader import DataError
+
+    return DataError(message)
