@@ -113,6 +113,23 @@ def test_parse_config_accepts_a_pasted_json_config():
     assert creds.token == "secrettoken1234"
 
 
+def test_parse_config_accepts_the_snippet_ctrader_web_shows():
+    """cTrader Web prints the body without the outer braces; the URL must not keep its quote."""
+    snippet = (
+        '"url": "https://mcp.ctrader.com/trading",\n'
+        '"headers": {\n'
+        '  "Authorization": "Bearer eyJwbGF0Zm9ybSI6ImN0cmFkZXIifQ.abc-123_XY"\n'
+        "}"
+    )
+    creds = parse_config(snippet)
+    assert creds.url == "https://mcp.ctrader.com/trading"
+    assert creds.token == "eyJwbGF0Zm9ybSI6ImN0cmFkZXIifQ.abc-123_XY"
+
+    braced = "{" + snippet + "}"
+    assert parse_config(braced).url == creds.url
+    assert parse_config(braced).token == creds.token
+
+
 def test_parse_config_accepts_a_bare_token_with_a_known_url():
     creds = parse_config("abcdefghijklmnopqrst", known_url="https://mcp.ctrader.com/x")
     assert creds.token == "abcdefghijklmnopqrst"

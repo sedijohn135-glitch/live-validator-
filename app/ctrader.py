@@ -122,8 +122,8 @@ def parse_config(raw: str, known_url: str = "") -> Credentials | None:
         if url and token:
             return Credentials(url.rstrip("/"), token, "config")
         return None
-    url_match = re.search(r"https?://\S+", text)
-    url = url_match.group(0).rstrip("/,") if url_match else known_url
+    url_match = re.search(r"https?://[^\s\"',;}\]]+", text)
+    url = url_match.group(0).rstrip("/") if url_match else known_url
     token_match = re.search(r"(?i)bearer\s+([A-Za-z0-9._\-]+)", text)
     if token_match:
         token = token_match.group(1)
