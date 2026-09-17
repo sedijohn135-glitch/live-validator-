@@ -279,3 +279,47 @@ def test_a_closed_market_says_so_instead_of_blaming_the_feed(tmp_path):
     assert "mbyllur" in result.text
     assert result.data["market_open"] is False
     assert runtime.data_block("XAUUSD", True, now)["market_open"] is False
+
+
+# ---------------------------------------- a token that dies twice must warn twice
+def test_the_token_warning_repeats_instead_of_firing_once_forever(tmp_path):
+    """The bug: a fixed dedupe key meant the second expiry, weeks later, warned nobody."""
+    from app.ctrader import AuthError
+
+    runtime, _fake, _tg = make_runtime(tmp_path)
+    now = ts("2026-09-17 09:00")
+    runtime.clock = lambda: now
+
+    runtime._on_auth_error(AuthError("token expired"))
+    runtime._on_auth_error(AuthError("token expired"))  # same hour: one warning is enough
+    assert len(_auth_messages(runtime)) == 1
+
+    now = ts("2026-09-17 11:00")  # still broken two hours later
+    runtime._on_auth_error(AuthError("token expired"))
+    assert len(_auth_messages(runtime)) == 2
+
+    runtime._on_data_ok()  # owner pasted a new token
+    now = ts("2026-09-17 11:10")
+    runtime._on_auth_error(AuthError("token expired"))  # and it died again straight away
+    assert len(_auth_messages(runtime)) == 3
+
+
+def _auth_messages(runtime) -> list[dict]:
+    return [row for row in runtime.store.pending_messages(50) if row["dedupe_key"].startswith("sys:auth_expired")]
+
+
+def test_the_account_number_is_readable_from_the_token(tmp_path):
+    """A cTrader account switch invalidates the token silently: /selftest and /status must show which."""
+    import base64
+    import json
+
+    from app.ctrader import Credentials, account_hint
+
+    payload = json.dumps({"platform": "ctrader", "account": 10099943, "env": "demo"}).encode()
+    token = base64.urlsafe_b64encode(payload).decode().rstrip("=") + ".c2lnbmF0dXJlLXBhcnQ"
+    assert account_hint(token) == "10099943"
+    assert Credentials("https://ctrader.test/mcp", token, "env_pair").account == "10099943"
+
+    assert account_hint("") == ""
+    assert account_hint("not-a-token") == ""
+    assert account_hint("tok" * 8) == ""  # the harness token carries no account

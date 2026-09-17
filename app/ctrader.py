@@ -7,6 +7,7 @@ there is no override flag and no environment switch.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -113,6 +114,29 @@ class DataError(Exception):
     """Any other cTrader failure: outage logic applies."""
 
 
+ACCOUNT_PATTERN = re.compile(r'"account"\s*:\s*"?(\d{4,})\D')
+
+
+def account_hint(token: str) -> str:
+    """The cTrader account number the token was issued for, for diagnostics only.
+
+    Nothing is verified or decrypted: we only read the plain base64 part, because switching
+    account in cTrader silently invalidates the token and that must be visible in /selftest.
+    """
+    for segment in token.split("."):
+        body = segment[: len(segment) - len(segment) % 4]
+        if len(body) < 16:
+            continue
+        try:
+            decoded = base64.urlsafe_b64decode(body).decode("utf-8", "ignore")
+        except Exception:  # noqa: BLE001 - a segment that is not base64 is simply skipped
+            continue
+        found = ACCOUNT_PATTERN.search(decoded)
+        if found:
+            return found.group(1)
+    return ""
+
+
 def mask(token: str) -> str:
     if not token:
         return "-"
@@ -130,6 +154,10 @@ class Credentials:
     @property
     def masked(self) -> str:
         return mask(self.token)
+
+    @property
+    def account(self) -> str:
+        return account_hint(self.token)
 
 
 def _find_in(data: Any, keys: tuple[str, ...]) -> str | None:

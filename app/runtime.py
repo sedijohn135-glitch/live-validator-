@@ -97,6 +97,7 @@ class Runtime:
         self.last_snapshot: dict[str, tuple[float, dict]] = {}
         self.started_at = self.clock()
         self._last_outage_alert = 0.0
+        self._last_auth_alert = 0.0
         self._telegram_offset = 0
         self._tasks: list[asyncio.Task] = []
         self._history_loaded: set[tuple[str, str]] = set()
@@ -250,9 +251,15 @@ class Runtime:
 
     # ---------------------------------------------------------- data status
     def _on_auth_error(self, exc: Exception) -> None:
+        # A fixed dedupe key would alert once for the lifetime of the database: the second time the
+        # token dies, weeks later, the owner would hear nothing. Repeat hourly while it lasts.
+        now = self.clock()
         self.data_status = "auth_error"
         self.data_error = str(exc)[:200]
-        self.notify("auth_expired", "AUTH_EXPIRED")
+        if now - self._last_auth_alert < 3600.0:
+            return
+        self._last_auth_alert = now
+        self.notify(f"auth_expired:{int(now)}", "AUTH_EXPIRED")
 
     def _on_data_error(self, exc: Exception) -> None:
         now = self.clock()
@@ -272,6 +279,8 @@ class Runtime:
 
     def _on_data_ok(self) -> None:
         was_down = self.data_status in ("down", "auth_error")
+        if self.data_status == "auth_error":
+            self._last_auth_alert = 0.0  # a token that dies again right after a fix must alert again
         self.data_status = "ok"
         self.data_error = ""
         if was_down:
@@ -407,6 +416,7 @@ class Runtime:
                 "ctrader": self.data_status,
                 "last_quote_age_s": int(now - self.last_quote_at) if self.last_quote_at else None,
                 "symbols": sorted(self.ctrader.symbols),
+                "account": self.ctrader.credentials.account if self.ctrader.credentials else "",
             },
             "telegram": "ok" if self.settings.telegram_configured() else "not_configured",
             "mcp_auth": "open" if self.settings.mcp_open else "oauth",
@@ -644,7 +654,8 @@ class Runtime:
         health = self.health()
         lines = [
             "<b>Gjendja</b>",
-            f"cTrader: {tg.esc(health['data']['ctrader'])}",
+            f"cTrader: {tg.esc(health['data']['ctrader'])}"
+            + (f" · llogaria {tg.esc(health['data']['account'])}" if health["data"]["account"] else ""),
             f"Çmimi i fundit: {health['data']['last_quote_age_s']} s më parë"
             if health["data"]["last_quote_age_s"] is not None
             else "Çmimi i fundit: -",
@@ -690,7 +701,11 @@ class Runtime:
         if credentials is None:
             lines.append("❌ Kredencialet e cTrader mungojnë (CTRADER_MCP_CONFIG ose /ctrader)")
         else:
-            lines.append(f"✅ Kredencialet: {tg.esc(credentials.source)} · {tg.esc(credentials.masked)}")
+            account = credentials.account
+            lines.append(
+                f"✅ Kredencialet: {tg.esc(credentials.source)} · {tg.esc(credentials.masked)}"
+                + (f" · llogaria {tg.esc(account)}" if account else "")
+            )
             try:
                 info = await self.ctrader.discover()
                 lines.append(f"✅ get_version: {tg.esc(self.ctrader.version)}")
