@@ -288,6 +288,13 @@ def g02_data(setup: SetupInput, ctx: MarketContext) -> RuleResult:
     if ctx.bid is None:
         return fail("G-02", "Të dhënat mungojnë (çmimi live)", quote_age=ctx.quote_age)
     if ctx.quote_age > ctx.profile.intake_quote_max_age_s:
+        if not is_market_open(ctx.symbol, from_epoch(ctx.now_ts)):
+            return fail(
+                "G-02",
+                "Tregu është i mbyllur — çmimi i fundit është nga sesioni i kaluar",
+                quote_age=ctx.quote_age,
+                market_open=False,
+            )
         return fail("G-02", "Të dhënat mungojnë (çmimi live)", quote_age=ctx.quote_age)
     needed = set(setup.timeframes) | {"H1", "D1"}
     missing = [tf for tf in sorted(needed) if not ctx.has_candles(tf, 15)]

@@ -328,19 +328,21 @@ class Runtime:
             else None,
             session_levels(self.candles, symbol, now),
             self.time_block(symbol, now),
-            self.data_block(symbol, quote is not None),
+            self.data_block(symbol, quote is not None, now),
         )
         if payload["data"]["usable"]:
             self.last_snapshot[symbol] = (now, payload)
         return payload
 
-    def data_block(self, symbol: str, has_quote: bool) -> dict[str, Any]:
+    def data_block(self, symbol: str, has_quote: bool, now: float | None = None) -> dict[str, Any]:
         """Whether this snapshot can be analysed at all, and why not when it cannot."""
+        now = self.clock() if now is None else now
         bars = {tf: len(self.candles.series(symbol, tf)) for tf in ("M1", "M5", "M15", "H1", "D1")}
         usable = has_quote and all(count >= 15 for count in bars.values())
         block: dict[str, Any] = {
             "status": self.data_status,
             "usable": usable,
+            "market_open": is_market_open(symbol, from_epoch(now)),
             "symbols_resolved": sorted(self.ctrader.symbols),
             "candles_held": bars,
         }

@@ -67,7 +67,18 @@ MAX_WINDOW_S = 720 * 3600  # the server refuses wider request windows
 MAX_BARS_PER_CALL = 90  # the proxy truncates a response at ~100 bars whatever the window
 PRECISION_TABLE = {"XAUUSD": 3, "BTCUSD": 2}
 
-AUTH_PATTERN = re.compile(r"unauthori|forbidden|expired|invalid token|session", re.IGNORECASE)
+# "session" and "expired" on their own are far too broad: a broker saying "trading session is
+# closed" during the daily break would raise a false "your token expired" alarm and pause the engine.
+# Auth words only count when they sit next to a credential.
+AUTH_PATTERN = re.compile(
+    r"unauthori[sz]ed|forbidden|\b401\b|\b403\b|"
+    r"(?:token|credential|bearer|api[ _-]?key|authorization)[^.\n]{0,40}"
+    r"(?:expired|invalid|revoked|missing|rejected)|"
+    r"(?:expired|invalid|revoked)[^.\n]{0,40}(?:token|credential|bearer|authorization)|"
+    r"session[^.\n]{0,20}expired|expired[^.\n]{0,20}session|"
+    r"re-?authenticate|please log ?in",
+    re.IGNORECASE,
+)
 URL_KEYS = ("url", "serverurl", "httpurl", "endpoint", "server_url", "http_url", "uri")
 TOKEN_KEYS = ("authorization", "token", "bearer", "access_token", "accesstoken", "apikey", "api_key")
 

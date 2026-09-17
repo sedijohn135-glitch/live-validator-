@@ -282,7 +282,9 @@ def test_wide_history_windows_are_chunked(tmp_path):
 
 
 # --------------------------------------------------------------------- errors
-@pytest.mark.parametrize("message", ["401 Unauthorized", "token expired", "invalid token", "session closed"])
+@pytest.mark.parametrize(
+    "message", ["401 Unauthorized", "token expired", "invalid token", "session has expired"]
+)
 def test_auth_style_errors_are_classified_as_auth(tmp_path, message):
     async def body(client, fake, _store):
         fake.fail_next = RuntimeError(message)

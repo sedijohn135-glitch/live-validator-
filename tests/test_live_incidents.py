@@ -242,3 +242,40 @@ def test_the_incident_setup_would_pass_placement_today():
     )
     result = g15_liquidity(setup, ctx)
     assert result.passed, result.data
+
+
+# ------------------------------------------------- the daily break is not a token problem
+def test_a_closed_market_is_never_reported_as_an_expired_token():
+    """The false alarm: 'trading session is closed' used to raise the 🔑 token warning and pause."""
+    from app.ctrader import AuthError, DataError, classify
+
+    for message in (
+        "trading session is closed",
+        "market session closed for maintenance",
+        "quote session unavailable",
+        "no data for this session",
+    ):
+        assert isinstance(classify(RuntimeError(message)), DataError), message
+    for message in (
+        "401 Unauthorized",
+        "403 Forbidden",
+        "token expired",
+        "invalid token",
+        "Your session has expired, please log in again",
+        "Authorization header missing",
+    ):
+        assert isinstance(classify(RuntimeError(message)), AuthError), message
+
+
+def test_a_closed_market_says_so_instead_of_blaming_the_feed(tmp_path):
+    runtime, _fake, _tg = make_runtime(tmp_path)
+    now = ts("2026-09-17 17:41")  # inside the daily 17:00-18:00 break
+    runtime.clock = lambda: now
+    load_candles(runtime, clean_long_scenario(day="2026-09-17"), ts("2026-09-17 08:10"))
+
+    ctx = runtime.make_context("XAUUSD", now)
+    result = g02_data(normalise(dict(BASE_SETUP)), ctx)
+    assert not result.passed
+    assert "mbyllur" in result.text
+    assert result.data["market_open"] is False
+    assert runtime.data_block("XAUUSD", True, now)["market_open"] is False
