@@ -454,3 +454,32 @@ def test_epoch_string_builds_are_also_handled(tmp_path):
         assert client.time_format == "epoch_string"
 
     with_client(tmp_path, body, fake=FakeCTrader(time_param="epoch_string"))
+
+
+def test_history_is_chunked_under_the_response_bar_limit(tmp_path):
+    """The live proxy truncates a response at ~100 bars, which silently shortened every history."""
+
+    async def body(client, fake, _store):
+        end = 1789560000.0
+        client.clock = lambda: end
+        candles = await client.candles("XAUUSD", "M5", count=400)
+        assert len(candles) == 400, f"only {len(candles)} bars came back"
+        assert candles[0].t == end - 400 * 300
+        calls = [c[1] for c in fake.calls if c[0] == "get_trendbars"]
+        assert len(calls) >= 5  # not one wide window
+        assert all(c["to"] - c["from"] <= 90 * 300 * 1000 for c in calls)
+
+    with_client(tmp_path, body, fake=FakeCTrader(max_bars_per_response=100))
+
+
+def test_a_day_of_m1_history_survives_the_bar_limit(tmp_path):
+    """T-01 and the Asian range read back over a day; a truncated M1 series blinds both."""
+
+    async def body(client, _fake, _store):
+        end = 1789560000.0
+        client.clock = lambda: end
+        candles = await client.candles("XAUUSD", "M1", count=1440)
+        assert len(candles) == 1440
+        assert (candles[-1].t - candles[0].t) / 3600 == pytest.approx(23.98, abs=0.1)
+
+    with_client(tmp_path, body, fake=FakeCTrader(max_bars_per_response=100))

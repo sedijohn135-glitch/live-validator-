@@ -306,7 +306,7 @@ class Runtime:
 
     def data_block(self, symbol: str, has_quote: bool) -> dict[str, Any]:
         """Whether this snapshot can be analysed at all, and why not when it cannot."""
-        bars = {tf: len(self.candles.series(symbol, tf)) for tf in ("M5", "M15", "H1", "D1")}
+        bars = {tf: len(self.candles.series(symbol, tf)) for tf in ("M1", "M5", "M15", "H1", "D1")}
         usable = has_quote and all(count >= 15 for count in bars.values())
         block: dict[str, Any] = {
             "status": self.data_status,
@@ -454,6 +454,11 @@ class Runtime:
         if info["profile"] == "trading":
             self.notify("trading_profile", "TRADING_PROFILE")
         self._on_data_ok()
+        for symbol in self.settings.symbols:
+            # Chunked history is dozens of calls; pay for it here, in the background, not inside the
+            # first market_snapshot Gemini asks for.
+            with contextlib.suppress(Exception):
+                await self.ensure_history(symbol)
 
     async def _heartbeat(self) -> None:
         if self.ctrader.credentials is None and self.ctrader.load_credentials() is None:

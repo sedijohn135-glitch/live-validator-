@@ -64,6 +64,7 @@ PERIODS = {
 }
 
 MAX_WINDOW_S = 720 * 3600  # the server refuses wider request windows
+MAX_BARS_PER_CALL = 90  # the proxy truncates a response at ~100 bars whatever the window
 PRECISION_TABLE = {"XAUUSD": 3, "BTCUSD": 2}
 
 AUTH_PATTERN = re.compile(r"unauthori|forbidden|expired|invalid token|session", re.IGNORECASE)
@@ -523,8 +524,14 @@ class CTraderClient:
         start = end - count * tf
         collected: dict[float, Candle] = {}
         cursor = start
-        while cursor < end:
-            chunk_end = min(end, cursor + MAX_WINDOW_S)
+        # Two caps apply: the documented 720-hour window and an undocumented per-response bar limit.
+        # Asking for a wide window silently returns only its newest bars, which left the Asian range
+        # and the liquidity lookback empty, so every chunk stays under the bar limit too.
+        span = min(MAX_WINDOW_S, MAX_BARS_PER_CALL * tf)
+        guard = 0
+        while cursor < end and guard < 60:
+            guard += 1
+            chunk_end = min(end, cursor + span)
             window = {
                 "symbol_id": info.symbol_id,
                 "period": period,

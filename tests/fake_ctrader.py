@@ -51,6 +51,7 @@ class FakeCTrader:
     include_trading: bool = True
     spot_param: str = "symbolIds"  # some rest-proxy builds call it `symbolId` and still take a list
     time_param: str = "int"  # "iso" or "epoch_string" for builds that declare the bound as a string
+    max_bars_per_response: int = 600  # the live proxy truncates around 100 whatever the window
 
     def build(self) -> MCPServer:
         server = MCPServer(name="fake-ctrader", version="1.0.18")
@@ -106,7 +107,7 @@ class FakeCTrader:
             bars = []
             stamp = start
             index = 0
-            while stamp < end and index < 600:
+            while stamp < end and index < self.max_bars_per_response:
                 bars.append(
                     {
                         "timestamp": stamp,
