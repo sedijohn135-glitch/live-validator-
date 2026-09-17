@@ -29,10 +29,17 @@ Në kanavacën e projektit: **+ Create / New → Volume** → lidhe me shërbimi
 | Emri | Vlera |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | tokeni nga BotFather |
-| `OWNER_PASSWORD` | fjalëkalim i gjatë (≥ 12 shenja) — do ta shkruash vetëm një herë te Gemini |
 | `CTRADER_MCP_CONFIG` | shiko hapin 6 |
 | `TELEGRAM_CHAT_ID` | shiko hapin 5 |
+| `MCP_AUTH` | `open` — Gemini lidhet direkt nga URL-ja, pa faqe fjalëkalimi |
+| `OWNER_PASSWORD` | duhet vetëm nëse **nuk** e vendos `MCP_AUTH=open` |
 Opsionale: `VALIDATOR_PROFILE` = `STRICT` (parazgjedhje) ose `BALANCED`.
+
+**Për `MCP_AUTH`:**
+- `open` — si një server MCP i thjeshtë: ngjit URL-në te Gemini dhe mbaron. Por kushdo që e di adresën
+  e Railway-t mund të dërgojë një setup dhe të shkaktojë një mesazh 🟢 HYR TANI që Gemini nuk e ka dërguar.
+- Pa e vendosur fare (parazgjedhja) — `/mcp` mbrohet: te Gemini shkruan `OWNER_PASSWORD` një herë.
+  Mund ta ndërrosh kurdo duke shtuar ose hequr variablën; `/status` dhe `/selftest` tregojnë gjendjen.
 Pas ndryshimit të variablave Railway bën redeploy vetë (ose shtyp **Deploy**).
 
 ## 5) Chat ID
@@ -52,11 +59,15 @@ Botit: `/selftest` → të gjitha rreshtat ✅. Nëse diçka është ❌, lexo r
 ## 8) Lidh Gemini
 1. Hap **gemini.google.com** në browser (nëse s'shfaqet opsioni, zgjidh "Desktop site").
 2. **Settings → Connected Apps → Custom apps for Spark → Add**.
-3. Emri: `live-validator` · URL: `https://<domeni-yt>.up.railway.app/mcp` (me `/mcp` në fund, pa `/` pas tij).
-4. **Next** → hapet faqja e validatorit → shkruaj `OWNER_PASSWORD` → **Lejo**. Boti njofton 🔗.
-5. Nëse Gemini kërkon "client ID / secret" (Advanced): vendos te Railway `OAUTH_STATIC_CLIENT_ID`,
-   `OAUTH_STATIC_CLIENT_SECRET` (dy tekste të rastësishme që i zgjedh ti) dhe `OAUTH_STATIC_REDIRECT_URIS`
-   (adresa e ridrejtimit që tregon Gemini), prit redeploy, pastaj fut të njëjtat vlera te Gemini.
+3. **MCP Server URL**: `https://<domeni-yt>.up.railway.app/mcp` (me `/mcp` në fund, pa `/` pas tij).
+4. **Client ID** dhe **Client secret** (te "Additional settings") **lëri bosh**.
+5. **Next**:
+   - me `MCP_AUTH=open` → lidhet menjëherë, s'ka faqe fjalëkalimi;
+   - pa `MCP_AUTH` → hapet faqja e validatorit → shkruaj `OWNER_PASSWORD` → **Lejo**. Boti njofton 🔗.
+6. Vetëm nëse Gemini këmbëngul për "client ID / secret" (dhe nuk je në `open`): vendos te Railway
+   `OAUTH_STATIC_CLIENT_ID`, `OAUTH_STATIC_CLIENT_SECRET` (dy tekste të rastësishme që i zgjedh ti) dhe
+   `OAUTH_STATIC_REDIRECT_URIS` (adresa e ridrejtimit që tregon Gemini), prit redeploy, pastaj fut të
+   njëjtat vlera te Gemini.
 
 ## 9) Skill-i v11 në Gemini Spark
 Hap skill-in tënd v11 dhe ngjit në fund tekstin e plotë nga `docs/GEMINI_V11_ADDENDUM.md`. Ruaj.
@@ -72,7 +83,7 @@ Hap skill-in tënd v11 dhe ngjit në fund tekstin e plotë nga `docs/GEMINI_V11_
 | Shenja | Zgjidhja |
 |---|---|
 | Deploy "healthcheck failed" | kontrollo që Healthcheck Path = `/health`; shiko Deploy Logs |
-| Gemini s'lidhet | URL duhet të mbarojë me `/mcp`; domeni i gjeneruar; `OWNER_PASSWORD` i vendosur |
+| Gemini s'lidhet | URL duhet të mbarojë me `/mcp`; domeni i gjeneruar; ose `MCP_AUTH=open`, ose `OWNER_PASSWORD` i vendosur |
 | Gemini u shkëput pas deploy | mungon Volume te `/data` |
 | 🔑 token skadoi | cTrader Web → Remote MCP → `/ctrader …` |
 | S'vjen asnjë mesazh | `/start` te boti; `TELEGRAM_CHAT_ID` i saktë; `/selftest` |

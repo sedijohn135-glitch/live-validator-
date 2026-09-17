@@ -73,6 +73,7 @@ def test_setup_doc_covers_the_required_variables():
     assert "/mcp" in text  # the exact URL Gemini needs
     assert "Volume" in text
     assert "Sleeping" in text or "sleeping" in text  # failure mode D9
+    assert "MCP_AUTH" in text  # the owner must be able to find the switch again
 
 
 MONEY_WORDS = ("lot_size", "lotsize", "position_size", "risk_percent", "risk_pct", "account_balance", "equity")

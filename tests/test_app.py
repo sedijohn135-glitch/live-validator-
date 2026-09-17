@@ -406,3 +406,45 @@ def test_tokens_survive_a_restart_on_the_same_database(tmp_path):
             json=rpc("tools/list"),
             headers={**MCP_HEADERS, "Authorization": f"Bearer {refreshed.json()['access_token']}"},
         ).status_code == 200
+
+
+# --------------------------------------------------------------- open MCP mode
+def test_open_mode_serves_mcp_without_any_token(tmp_path):
+    """MCP_AUTH=open is the owner's explicit choice: Gemini connects straight from the URL."""
+    app, runtime, _fake, _tg = make_app(tmp_path, MCP_AUTH="open")
+    assert runtime.settings.mcp_open
+    with TestClient(app, base_url=BASE_URL) as test_client:
+        listed = test_client.post("/mcp", json=rpc("tools/list"), headers=MCP_HEADERS)
+        assert listed.status_code == 200, listed.text
+        assert "market_snapshot" in listed.text
+
+        health = test_client.get("/health").json()
+        assert health["mcp_auth"] == "open"
+        assert any("MCP_AUTH=open" in w for w in health["warnings"])
+
+        # No OAuth surface is advertised at all in this mode.
+        assert test_client.get("/.well-known/oauth-authorization-server").status_code == 404
+        assert test_client.get("/oauth/login", params={"tx": "x"}).status_code == 404
+
+
+def test_open_mode_still_accepts_a_public_host_header(tmp_path):
+    app, _runtime, _fake, _tg = make_app(tmp_path, MCP_AUTH="open")
+    with TestClient(app, base_url=BASE_URL) as test_client:
+        headers = {**MCP_HEADERS, "Host": "validator.up.railway.app"}
+        assert test_client.post("/mcp", json=rpc("tools/list"), headers=headers).status_code == 200
+
+
+def test_authentication_is_on_by_default(tmp_path):
+    app, runtime, _fake, _tg = make_app(tmp_path)
+    assert not runtime.settings.mcp_open
+    with TestClient(app, base_url=BASE_URL) as test_client:
+        assert test_client.post("/mcp", json=rpc("tools/list"), headers=MCP_HEADERS).status_code == 401
+        assert test_client.get("/health").json()["mcp_auth"] == "oauth"
+
+
+def test_an_unknown_auth_value_falls_back_to_oauth(tmp_path):
+    app, runtime, _fake, _tg = make_app(tmp_path, MCP_AUTH="banana")
+    assert not runtime.settings.mcp_open
+    assert any("banana" in w for w in runtime.settings.warnings)
+    with TestClient(app, base_url=BASE_URL) as test_client:
+        assert test_client.post("/mcp", json=rpc("tools/list"), headers=MCP_HEADERS).status_code == 401

@@ -69,26 +69,38 @@ def build_app(runtime: Runtime | None = None):
             await runtime.stop()
 
     base = settings.public_base_url.rstrip("/")
-    server = MCPServer(
-        name="live-validator",
-        instructions=INSTRUCTIONS,
-        version=VERSION,
-        auth_server_provider=provider,
-        auth=AuthSettings(
-            issuer_url=base,
-            resource_server_url=f"{base}/mcp",
-            client_registration_options=ClientRegistrationOptions(
-                enabled=True, valid_scopes=None, default_scopes=["mcp"]
+    if settings.mcp_open:
+        # MCP_AUTH=open: the owner chose to serve /mcp with no authentication at all, the way a
+        # plain MCP server behaves. Gemini then connects straight from the URL, with no login page
+        # and no client id or secret — and so can anyone else who knows the address.
+        logger.warning("MCP_AUTH=open: /mcp is served without authentication")
+        server = MCPServer(
+            name="live-validator",
+            instructions=INSTRUCTIONS,
+            version=VERSION,
+            lifespan=lifespan,
+        )
+    else:
+        server = MCPServer(
+            name="live-validator",
+            instructions=INSTRUCTIONS,
+            version=VERSION,
+            auth_server_provider=provider,
+            auth=AuthSettings(
+                issuer_url=base,
+                resource_server_url=f"{base}/mcp",
+                client_registration_options=ClientRegistrationOptions(
+                    enabled=True, valid_scopes=None, default_scopes=["mcp"]
+                ),
+                revocation_options=RevocationOptions(enabled=True),
+                required_scopes=None,
+                validate_token_resource=True,
             ),
-            revocation_options=RevocationOptions(enabled=True),
-            required_scopes=None,
-            validate_token_resource=True,
-        ),
-        lifespan=lifespan,
-    )
+            lifespan=lifespan,
+        )
 
     tools_module.register(server, runtime)
-    _register_routes(server, runtime, provider)
+    _register_routes(server, runtime, provider, login_routes=not settings.mcp_open)
 
     local = base.startswith("http://localhost") or base.startswith("http://127.0.0.1")
     security = TransportSecuritySettings(enable_dns_rebinding_protection=False) if not local else None
@@ -99,7 +111,9 @@ def build_app(runtime: Runtime | None = None):
     return app
 
 
-def _register_routes(server: MCPServer, runtime: Runtime, provider: SQLiteOAuthProvider) -> None:
+def _register_routes(
+    server: MCPServer, runtime: Runtime, provider: SQLiteOAuthProvider, login_routes: bool = True
+) -> None:
     @server.custom_route("/health", methods=["GET"])
     async def health(_request: Request) -> JSONResponse:
         """Always 200 while the process runs: a missing cTrader token must not fail the deploy."""
@@ -108,6 +122,10 @@ def _register_routes(server: MCPServer, runtime: Runtime, provider: SQLiteOAuthP
         except Exception as exc:  # noqa: BLE001 - health must never throw
             payload = {"ok": True, "version": VERSION, "error": str(exc)[:200]}
         return JSONResponse(payload)
+
+    if not login_routes:
+        _ = health
+        return
 
     @server.custom_route("/oauth/login", methods=["GET"])
     async def login_form(request: Request) -> HTMLResponse:

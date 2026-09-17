@@ -275,8 +275,14 @@ class Settings:
     oauth_static_client_secret: str = ""
     oauth_static_redirect_uris: tuple[str, ...] = ()
     log_level: str = "INFO"
+    mcp_auth: str = "oauth"
     warnings: list[str] = field(default_factory=list)
     dev_mode: bool = False
+
+    @property
+    def mcp_open(self) -> bool:
+        """True when `/mcp` is served without any authentication (owner's explicit choice)."""
+        return self.mcp_auth == "open"
 
     @property
     def db_path(self) -> str:
@@ -361,6 +367,18 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
 
         redirect_uris = tuple(u.strip() for u in _env("OAUTH_STATIC_REDIRECT_URIS").split(",") if u.strip())
 
+        raw_auth = _env("MCP_AUTH", "oauth").lower()
+        if raw_auth in ("open", "none", "off", "false", "0"):
+            mcp_auth = "open"
+            warnings.append(
+                "MCP_AUTH=open: /mcp është pa fjalëkalim — kushdo me adresën mund të dërgojë setup"
+            )
+        elif raw_auth in ("oauth", "on", "true", "1", ""):
+            mcp_auth = "oauth"
+        else:
+            mcp_auth = "oauth"
+            warnings.append(f"MCP_AUTH '{raw_auth}' nuk njihet — po përdoret oauth")
+
         return Settings(
             profile=profile,
             symbols=symbols,
@@ -382,6 +400,7 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
             oauth_static_client_secret=_env("OAUTH_STATIC_CLIENT_SECRET"),
             oauth_static_redirect_uris=redirect_uris,
             log_level=_env("LOG_LEVEL", "INFO").upper() or "INFO",
+            mcp_auth=mcp_auth,
             warnings=warnings,
             dev_mode=_env_bool("DEV_MODE", False),
         )

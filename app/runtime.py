@@ -351,6 +351,7 @@ class Runtime:
                 "symbols": sorted(self.ctrader.symbols),
             },
             "telegram": "ok" if self.settings.telegram_configured() else "not_configured",
+            "mcp_auth": "open" if self.settings.mcp_open else "oauth",
             "volume": "ok" if self.settings.on_volume else "missing",
             "active_setups": len(active),
             "paused": self.paused,
@@ -588,6 +589,7 @@ class Runtime:
             f"Telegram: {tg.esc(health['telegram'])} · Volume: {tg.esc(health['volume'])}",
             f"Profili: {tg.esc(self.settings.profile.name)} · Uptime: {health['uptime_s']} s",
             f"Pauzë: {'po' if health['paused'] else 'jo'}",
+            "Hyrja te /mcp: " + ("⚠️ e hapur (pa fjalëkalim)" if self.settings.mcp_open else "✅ me fjalëkalim"),
         ]
         if health["warnings"]:
             lines.append("⚠️ " + tg.esc("; ".join(health["warnings"][:3])))
@@ -674,6 +676,10 @@ class Runtime:
         )
         lines.append(("✅" if self.settings.on_volume else "⚠️") + " Volume te Railway")
         lines.append(f"✅ URL publike: {tg.esc(self.settings.public_base_url)}/mcp")
+        if self.settings.mcp_open:
+            lines.append("⚠️ /mcp është i hapur: kushdo me adresën mund të dërgojë setup (MCP_AUTH=open)")
+        else:
+            lines.append("✅ /mcp mbrohet me fjalëkalimin e pronarit")
         lines.append(
             ("✅" if self.news.ok else "⚠️") + " Filtri i lajmeve"
             + ("" if self.settings.news_filter else " (i fikur)")
