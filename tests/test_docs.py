@@ -8,6 +8,7 @@ from pathlib import Path
 from tests.test_tools import scenario_app, tools_of
 
 ADDENDUM = Path("docs/GEMINI_V11_ADDENDUM.md")
+SPARK_SKILL = Path("spark-skill/live-validator/SKILL.md")
 SETUP = Path("docs/SETUP_SQ.md")
 RULES = Path("docs/RULES_SQ.md")
 
@@ -57,6 +58,44 @@ def test_addendum_entry_models_match_the_code():
         assert model in text, f"{model} is missing from the addendum"
     for pda in PDA_TYPES:
         assert pda in text, f"{pda} is missing from the addendum"
+
+
+def test_spark_skill_meets_the_upload_requirements():
+    """Gemini's upload page: a SKILL.md in the main folder, with a kebab-case name."""
+    assert SPARK_SKILL.exists()
+    text = SPARK_SKILL.read_text()
+    name = re.search(r"^name:\s*(\S+)\s*$", text, re.M)
+    assert name, "SKILL.md needs a name in its front matter"
+    assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name.group(1)), "the skill name must be kebab case"
+    assert re.search(r"^description:\s*\S", text, re.M)
+    assert SPARK_SKILL.parent.name == name.group(1)
+
+
+def test_spark_skill_names_only_real_tools_and_parameters(tmp_path):
+    """The uploaded skill must not drift from the server it drives."""
+    tools = registered(tmp_path)
+    text = SPARK_SKILL.read_text()
+    named = set(re.findall(r"`(market_\w+|setup_\w+|validator_\w+)`", text))
+    assert named, "the skill must name the tools"
+    assert named - set(tools) == set()
+
+    properties = set(tools["setup_submit"].input_schema["properties"])
+    section = text.split("## D.")[1].split("## E.")[0]
+    parameters: set[str] = set()
+    for line in section.splitlines():
+        if not line.startswith("|") or line.startswith("| v11 box") or set(line) <= set("|- "):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) >= 2:
+            parameters.update(re.findall(r"`(\w+)`", cells[1]))
+    parameters -= RESPONSE_FIELDS
+    assert parameters, "section D must name parameters"
+    assert parameters - properties == set()
+
+    from app.config import ENTRY_MODELS, PDA_TYPES
+
+    for value in (*ENTRY_MODELS, *PDA_TYPES):
+        assert value in text, f"{value} is missing from the uploaded skill"
 
 
 def test_no_railway_config_as_code():
