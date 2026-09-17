@@ -25,6 +25,7 @@ packages = ["app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["slow: starts a real uvicorn process"]
 
 [tool.ruff]
 line-length = 120

@@ -18,7 +18,7 @@ from typing import Any
 
 from app import news as news_module
 from app import telegram as tg
-from app.config import TIMEFRAMES, Settings, load_settings
+from app.config import TIMEFRAMES, VERSION, Settings, load_settings
 from app.context import MarketContext
 from app.ctrader import AuthError, CTraderClient, DataError, Quote
 from app.engine import Engine
@@ -132,7 +132,8 @@ class Runtime:
 
     @property
     def paused(self) -> bool:
-        return self.engine.paused() or self.data_status in ("down", "auth_error")
+        """No data, no triggers. `/pause` and every unhealthy data state stop ENTER messages."""
+        return self.engine.paused() or self.data_status in ("down", "auth_error", "not_configured")
 
     # ----------------------------------------------------------------- notify
     def notify(self, key: str, text: str) -> None:
@@ -342,7 +343,8 @@ class Runtime:
         active = self.store.setups_in_state(("ARMED", "IN_ZONE", "TRIGGERED"))
         return {
             "ok": True,
-            "version": self.settings.profile.name,
+            "version": VERSION,
+            "profile": self.settings.profile.name,
             "uptime_s": int(now - self.started_at),
             "data": {
                 "ctrader": self.data_status,
@@ -428,6 +430,9 @@ class Runtime:
         self._on_data_ok()
 
     async def _heartbeat(self) -> None:
+        if self.ctrader.credentials is None and self.ctrader.load_credentials() is None:
+            self.data_status = "not_configured"
+            return
         try:
             await self.ctrader.call("get_version")
             self._on_data_ok()

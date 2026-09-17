@@ -39,7 +39,9 @@ def test_health_is_200_without_any_credentials(tmp_path):
     payload = response.json()
     assert payload["ok"] is True
     assert payload["telegram"] == "not_configured"
-    assert payload["data"]["ctrader"] in ("not_configured", "down")
+    assert payload["data"]["ctrader"] == "not_configured"
+    assert payload["version"] and payload["profile"] == "STRICT"
+    assert payload["paused"] is True  # no data means no triggers
     assert "token" not in json.dumps(payload).lower()
 
 

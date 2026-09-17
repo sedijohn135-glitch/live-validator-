@@ -104,7 +104,7 @@ def _register_routes(server: MCPServer, runtime: Runtime, provider: SQLiteOAuthP
     async def health(_request: Request) -> JSONResponse:
         """Always 200 while the process runs: a missing cTrader token must not fail the deploy."""
         try:
-            payload = {"version": VERSION, **runtime.health()}
+            payload = runtime.health()
         except Exception as exc:  # noqa: BLE001 - health must never throw
             payload = {"ok": True, "version": VERSION, "error": str(exc)[:200]}
         return JSONResponse(payload)
