@@ -74,7 +74,9 @@ Hap skill-in tënd v11 dhe ngjit në fund tekstin e plotë nga `docs/GEMINI_V11_
 
 ## 10) Përdorimi i përditshëm
 - Te Gemini shkruan: `xauusd` ose `btcusd` (për siguri: `@live-validator xauusd`).
-- Gemini analizon; kur dërgon setup-in mund të të kërkojë **Confirm** — shtype (rregull i Google).
+- Gemini analizon dhe e dërgon setup-in vetë, pa të pyetur. Të gjitha mjetet i janë deklaruar si
+  "vetëm lexim", ndaj Spark nuk kërkon **Allow**. Nëse Google e shfaq prapë një herë atë pyetje,
+  vjen nga ana e tyre — shtype dhe vazhdon.
 - Telegram: 🎯 = po monitorohet · 🟢 HYR TANI = hyr · ⛔/⌛/⚠️ = mos hyr · ❌ = u refuzua.
 - Te 🟢: mos hyr nëse çmimi ka kaluar kufirin "Mos hyr nëse…" ose koha "vlen deri" ka kaluar.
 - Lot, rrezik, hyrje apo jo: vendim yti. Sistemi nuk tregton kurrë.

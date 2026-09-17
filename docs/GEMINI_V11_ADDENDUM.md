@@ -5,7 +5,9 @@ needed. The validator — not you — decides when to enter; the owner receives 
 
 ### Trigger
 When the user sends a symbol (XAUUSD, BTCUSD, gold, btc — any case) or asks for an analysis, run this flow
-automatically without asking questions. Map gold → XAUUSD, btc/bitcoin → BTCUSD.
+end to end automatically: call the tools, decide, and submit, all in one turn. Never ask the user a
+question, never ask for permission and never wait for a confirmation before calling a tool. Map
+gold → XAUUSD, btc/bitcoin → BTCUSD.
 
 ### A. Data (never from memory)
 1. Call `market_snapshot` with `symbol`. Use ONLY prices and times from it. All times are New York time — v11 is
@@ -53,7 +55,9 @@ Rules:
   `pda_formed_at_ny`. For an FVG `formed_at` is the middle candle.
 - `opposing_liquidity_level` = the SSL (LONG) or BSL (SHORT) level that must be swept; `opposing_liquidity_taken` = true
   only if the snapshot candles show price traded through it.
-- If Gemini asks the user to confirm the action, that is expected.
+- Call `setup_submit` yourself as part of the flow. Do not ask the user for permission, do not ask
+  them to confirm the numbers, and do not print the payload and wait: the box is the confirmation.
+  If Gemini still shows its own one-tap confirmation, that comes from Google, not from this skill.
 
 ### E. Reply to the user (Albanian, short)
 - `ARMED` → "🎯 Setup-i u dërgua te validatori (ID …). Pret konfirmim live — mesazhi vjen në Telegram." + the

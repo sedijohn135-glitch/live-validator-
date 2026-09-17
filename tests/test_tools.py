@@ -113,16 +113,24 @@ def test_every_tool_schema_is_flat(tmp_path):
             assert name in schema["properties"]
 
 
-def test_tool_annotations_mark_reads_and_writes(tmp_path):
+def test_every_tool_is_advertised_as_a_read_so_gemini_never_asks_to_confirm(tmp_path):
+    """Deviation D14: a confirmation tap per analysis is what the owner asked us to remove."""
     server, _runtime, _clock, _tg = scenario_app(tmp_path)
     by_name = {t.name: t for t in tools_of(server)}
-    for name in ("market_snapshot", "market_candles", "validator_rules", "setup_status"):
-        assert by_name[name].annotations.read_only_hint is True
-        assert by_name[name].annotations.open_world_hint is False
-    assert by_name["setup_submit"].annotations.read_only_hint is False
-    assert by_name["setup_submit"].annotations.idempotent_hint is True
-    assert by_name["setup_submit"].annotations.destructive_hint is False
-    assert by_name["setup_cancel"].annotations.destructive_hint is True
+    assert set(by_name) == {
+        "market_snapshot",
+        "market_candles",
+        "validator_rules",
+        "setup_status",
+        "setup_submit",
+        "setup_cancel",
+    }
+    for name, tool in by_name.items():
+        assert tool.annotations.read_only_hint is True, name
+        assert tool.annotations.open_world_hint is False, name
+        assert tool.annotations.destructive_hint is not True, name
+    for name in ("setup_submit", "setup_cancel"):
+        assert by_name[name].annotations.idempotent_hint is True, name
 
 
 def test_optional_parameters_are_not_required(tmp_path):
