@@ -8,11 +8,25 @@ from __future__ import annotations
 import contextlib
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from mcp import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+
+
+def _ms(value: str, accepts: str) -> int:
+    """Parse a window bound the way one build does, and reject the other build's form."""
+    text = str(value).strip()
+    if text.isdigit():
+        if accepts != "epoch_string":
+            raise ToolError('-32602 Input validation error: expected ISO-8601 at path ["fromTimestamp"]')
+        return int(text)
+    if accepts != "iso":
+        raise ToolError('-32602 Input validation error: expected epoch ms at path ["fromTimestamp"]')
+    return int(datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp() * 1000)
+
 
 SYMBOLS = [
     {"symbolId": 41, "symbolName": "XAUUSD", "enabled": True, "description": "Gold", "pipDigits": 3},
@@ -36,6 +50,7 @@ class FakeCTrader:
     rate_limit_hits: int = 0
     include_trading: bool = True
     spot_param: str = "symbolIds"  # some rest-proxy builds call it `symbolId` and still take a list
+    time_param: str = "int"  # "iso" or "epoch_string" for builds that declare the bound as a string
 
     def build(self) -> MCPServer:
         server = MCPServer(name="fake-ctrader", version="1.0.18")
@@ -76,28 +91,22 @@ class FakeCTrader:
             def get_spot_prices(symbolIds: list[int]) -> str:  # noqa: N803 - mirrors the real API
                 return spot_prices(symbolIds)
 
-        @server.tool()
-        def get_trendbars(
-            symbolId: int,  # noqa: N803 - mirrors the real API
-            period: str,
-            fromTimestamp: int,  # noqa: N803
-            toTimestamp: int,  # noqa: N803
-        ) -> str:
+        def trendbars(symbol_id: int, period: str, start: int, end: int) -> str:
             self.calls.append(
-                ("get_trendbars", {"symbolId": symbolId, "period": period, "from": fromTimestamp, "to": toTimestamp})
+                ("get_trendbars", {"symbolId": symbol_id, "period": period, "from": start, "to": end})
             )
             self._maybe_fail()
             if period not in ("M_1", "M_5", "M_15", "M_30", "H_1", "H_4", "D_1", "W_1", "MN_1"):
                 raise ValueError("-32602 invalid period")
-            if toTimestamp - fromTimestamp > 720 * 3600 * 1000:
+            if end - start > 720 * 3600 * 1000:
                 raise ValueError("window too wide")
             seconds = {"M_1": 60, "M_5": 300, "M_15": 900, "M_30": 1800, "H_1": 3600, "H_4": 14400, "D_1": 86400}[
                 period
             ]
             bars = []
-            stamp = fromTimestamp
+            stamp = start
             index = 0
-            while stamp < toTimestamp and index < 600:
+            while stamp < end and index < 600:
                 bars.append(
                     {
                         "timestamp": stamp,
@@ -110,6 +119,33 @@ class FakeCTrader:
                 stamp += seconds * 1000
                 index += 1
             return json.dumps({"trendbars": bars})
+
+        if self.time_param == "int":
+
+            @server.tool(name="get_trendbars")
+            def get_trendbars_int(
+                symbolId: int,  # noqa: N803 - mirrors the real API
+                period: str,
+                fromTimestamp: int,  # noqa: N803
+                toTimestamp: int,  # noqa: N803
+            ) -> str:
+                return trendbars(symbolId, period, fromTimestamp, toTimestamp)
+
+        else:
+
+            @server.tool(name="get_trendbars")
+            def get_trendbars_text(
+                symbolId: int,  # noqa: N803 - mirrors the real API
+                period: str,
+                fromTimestamp: str,  # noqa: N803
+                toTimestamp: str,  # noqa: N803
+            ) -> str:
+                return trendbars(
+                    symbolId,
+                    period,
+                    _ms(fromTimestamp, self.time_param),
+                    _ms(toTimestamp, self.time_param),
+                )
 
         if self.include_trading:
             self._register_trading(server)

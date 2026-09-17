@@ -14,6 +14,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import TIMEFRAMES, Settings
@@ -44,6 +45,12 @@ ARG_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "to": ("toTimestamp", "to_timestamp", "to", "toDate", "endTimestamp"),
     },
 }
+
+TIME_ARGS = frozenset({"from", "to"})
+
+# A window bound may be epoch milliseconds, the same number as a string, or ISO-8601 Z, depending on
+# the build. The schema decides; when it only says "string", we try ISO first and fall back once.
+TIME_FORMATS = ("iso", "epoch_string")
 
 PERIODS = {
     "M1": "M_1",
@@ -246,6 +253,7 @@ class CTraderClient:
     credentials: Credentials | None = None
     tool_names: tuple[str, ...] = ()
     tool_schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    time_format: str = "iso"
     symbols: dict[str, SymbolInfo] = field(default_factory=dict)
     version: str = ""
     profile_kind: str = "unknown"
@@ -358,6 +366,7 @@ class CTraderClient:
         self.profile_kind = "trading" if KNOWN_TRADING_TOOLS & set(names) else "data"
         if self.store:
             self.store.set_json("ctrader_tools", list(names))
+        self._pick_time_format()
         version = await self.call("get_version")
         self.version = str(_first_value(version, ("version", "build", "rest_proxy")) or version)
         await self.load_symbols()
@@ -432,8 +441,20 @@ class CTraderClient:
         for logical, value in values.items():
             candidates = aliases.get(logical, (logical,))
             name = next((c for c in candidates if c in properties), candidates[0])
-            out[name] = _fit_type(properties.get(name), value)
+            spec = properties.get(name)
+            out[name] = (
+                _fit_time(spec, value, self.time_format) if logical in TIME_ARGS else _fit_type(spec, value)
+            )
         return out
+
+    def _pick_time_format(self) -> None:
+        """Read the window-bound type from the schema; ISO unless it names epoch milliseconds."""
+        properties = self._properties("get_trendbars")
+        spec = properties.get("fromTimestamp") or properties.get("from") or {}
+        if not isinstance(spec, dict) or spec.get("type") != "string":
+            return
+        text = f"{spec.get('format', '')} {spec.get('description', '')}".lower()
+        self.time_format = "epoch_string" if ("epoch" in text or "milli" in text) else "iso"
 
     # --------------------------------------------------------------- decoding
     def decode(self, symbol: str, raw: float) -> float | None:
@@ -504,18 +525,18 @@ class CTraderClient:
         cursor = start
         while cursor < end:
             chunk_end = min(end, cursor + MAX_WINDOW_S)
-            payload = await self.call(
-                "get_trendbars",
-                self.build_args(
-                    "get_trendbars",
-                    {
-                        "symbol_id": info.symbol_id,
-                        "period": period,
-                        "from": int(cursor * 1000),
-                        "to": int(chunk_end * 1000),
-                    },
-                ),
-            )
+            window = {
+                "symbol_id": info.symbol_id,
+                "period": period,
+                "from": int(cursor * 1000),
+                "to": int(chunk_end * 1000),
+            }
+            try:
+                payload = await self.call("get_trendbars", self.build_args("get_trendbars", window))
+            except DataError as exc:
+                if not self._flip_time_format(exc):
+                    raise
+                payload = await self.call("get_trendbars", self.build_args("get_trendbars", window))
             for bar in _as_list(payload, "trendbars", "bars"):
                 candle = self._decode_bar(symbol, bar, tf, end)
                 if candle is not None:
@@ -540,6 +561,21 @@ class CTraderClient:
                 return None
             values.append(decoded)
         return Candle(open_ts, *values)
+
+    def _flip_time_format(self, error: Exception) -> bool:
+        """True when the failure looks like a rejected window bound and another format is left to try."""
+        text = str(error).lower()
+        if "-32602" not in text and "invalid" not in text:
+            return False
+        if not any(word in text for word in ("timestamp", "from", "to", "date")):
+            return False
+        remaining = [f for f in TIME_FORMATS if f != self.time_format]
+        if not remaining:
+            return False
+        self.time_format = remaining[0]
+        self.warnings.append(f"formati i kohës u ndërrua në {self.time_format}")
+        logger.info("retrying get_trendbars with time_format=%s", self.time_format)
+        return True
 
     def cross_check(self, symbol: str, bid: float, last_close: float | None) -> bool:
         """Decoding sanity: the newest M1 close must be within 1 % of the live bid."""
@@ -570,6 +606,15 @@ def _default_connector(url: str, token: str):
                 yield client
 
     return run()
+
+
+def _fit_time(spec: Any, epoch_ms: int, mode: str) -> Any:
+    declared = (spec or {}).get("type") if isinstance(spec, dict) else None
+    if declared != "string":
+        return epoch_ms
+    if mode == "epoch_string":
+        return str(int(epoch_ms))
+    return datetime.fromtimestamp(int(epoch_ms) / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _fit_type(spec: Any, value: Any) -> Any:

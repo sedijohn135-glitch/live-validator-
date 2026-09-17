@@ -401,3 +401,56 @@ def test_a_scalar_argument_is_never_sent_as_a_list(tmp_path):
         assert args == {"symbolId": 41, "period": "M_5", "fromTimestamp": 1, "toTimestamp": 2}
 
     with_client(tmp_path, body)
+
+
+def test_string_window_bounds_are_sent_as_iso(tmp_path):
+    """This broker's build declares fromTimestamp as a string; epoch milliseconds are rejected."""
+
+    async def body(client, fake, _store):
+        end = 1789560000.0
+        client.clock = lambda: end
+        candles = await client.candles("XAUUSD", "M5", count=20)
+        assert candles, "no candles came back"
+        sent = [c for c in fake.calls if c[0] == "get_trendbars"]
+        assert sent, "get_trendbars was never called"
+        assert client.time_format == "iso"
+
+    with_client(tmp_path, body, fake=FakeCTrader(time_param="iso"))
+
+
+def test_a_rejected_time_format_is_retried_with_the_other_one(tmp_path):
+    """A validation error on a window bound is a format mismatch, not an outage."""
+
+    async def body(client, fake, _store):
+        client.time_format = "epoch_string"  # wrong for this build
+        end = 1789560000.0
+        client.clock = lambda: end
+        candles = await client.candles("XAUUSD", "M5", count=20)
+        assert candles
+        assert client.time_format == "iso"  # flipped itself
+        assert any("formati i kohës" in w for w in client.warnings)
+
+    with_client(tmp_path, body, fake=FakeCTrader(time_param="iso"))
+
+
+def test_integer_window_bounds_still_work(tmp_path):
+    async def body(client, fake, _store):
+        end = 1789560000.0
+        client.clock = lambda: end
+        assert await client.candles("XAUUSD", "M5", count=20)
+        window = [c[1] for c in fake.calls if c[0] == "get_trendbars"][-1]
+        assert isinstance(window["from"], int)
+
+    with_client(tmp_path, body)
+
+
+def test_epoch_string_builds_are_also_handled(tmp_path):
+    """The mirror case: a string bound that wants the epoch number, not ISO."""
+
+    async def body(client, _fake, _store):
+        end = 1789560000.0
+        client.clock = lambda: end
+        assert await client.candles("XAUUSD", "M5", count=20)
+        assert client.time_format == "epoch_string"
+
+    with_client(tmp_path, body, fake=FakeCTrader(time_param="epoch_string"))
