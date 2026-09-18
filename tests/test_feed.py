@@ -180,3 +180,28 @@ def test_the_runtime_watches_the_states_the_engine_actually_uses(tmp_path):
     assert runtime.store.get_setup(result["setup_id"])["state"] in OPEN_STATES
     assert "XAUUSD" in runtime._symbols_to_watch()
     assert runtime.health()["active_setups"] == 1
+
+
+def test_a_setup_left_by_the_previous_validator_never_breaks_the_answer(tmp_path):
+    """The live database still holds v11 rows: they are ignored, not decoded, and never crash."""
+    import json
+
+    runtime, now = runtime_with_candles(tmp_path)
+    with runtime.store.transaction() as conn:
+        runtime.store.insert_setup(
+            conn,
+            {
+                "id": "XAU-0917-OLD1",
+                "symbol": "XAUUSD",
+                "direction": "SHORT",
+                "model": "SILVER_BULLET",
+                "state": "ARMED",
+                "payload_json": json.dumps({"entry_model": "SILVER_BULLET", "checklist_positive": 8}),
+                "computed_json": "{}",
+                "fingerprint": "old",
+                "created_at": now - 3600,
+            },
+        )
+    assert runtime.engine.status()["active"] == []  # the old state is not one the engine watches
+    assert runtime.engine.status("XAU-0917-OLD1")["legacy"] is True
+    assert runtime._symbols_to_watch() == []

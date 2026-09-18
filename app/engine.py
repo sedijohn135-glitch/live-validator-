@@ -477,7 +477,19 @@ class Engine:
         return {"active": active, "recent_closed": closed, "paused": self.paused()}
 
     def _summary(self, row, detailed: bool = False) -> dict[str, Any]:
-        setup, computed = self._decode(row)
+        try:
+            setup, computed = self._decode(row)
+        except (KeyError, TypeError, ValueError):
+            # A setup written by the previous, strategy-bound validator. It is never processed
+            # again, but asking for it must not break the answer.
+            return {
+                "setup_id": row["id"],
+                "symbol": row["symbol"],
+                "direction": row["direction"],
+                "state": row["state"],
+                "legacy": True,
+                "created_ny": ny_string(row["created_at"]),
+            }
         out = {
             "setup_id": row["id"],
             "symbol": row["symbol"],
