@@ -370,3 +370,51 @@ def rules_data_error(message: str):
     from app.ctrader import DataError
 
     return DataError(message)
+
+
+# --------------------------------------------- a dead MCP session must rebuild itself
+def test_a_dead_mcp_session_is_reconnected_not_reported_hourly():
+    """The incident: 'Session not found; re-initialize' every hour from 01:44 to 04:45, no recovery."""
+    from app.ctrader import AuthError, DataError, classify, is_transient
+
+    for message in (
+        "Session not found; re-initialize",
+        "MCP error: session not found",
+        "404 Not Found",
+        "Invalid session id, please reinitialize",
+        "the session was terminated by the server",
+    ):
+        assert isinstance(classify(RuntimeError(message)), DataError), message
+        assert is_transient(DataError(message)), message
+    # An expired token still is not a hiccup: reconnecting with it would loop.
+    assert isinstance(classify(RuntimeError("your session has expired, please log in")), AuthError)
+
+
+def test_the_engine_rebuilds_a_broken_link_by_itself(tmp_path):
+    """Whatever wording the failure arrives in, the link is rebuilt instead of idling for hours."""
+    import asyncio
+
+    runtime, _fake, _tg = make_runtime(tmp_path)
+    now = ts("2026-09-18 02:00")
+    runtime.clock = lambda: now
+    reconnects = []
+
+    async def fake_reconnect():
+        reconnects.append(True)
+
+    runtime.ctrader.reconnect = fake_reconnect
+
+    runtime.data_status = "ok"
+    asyncio.run(runtime._heal_connection(now))
+    assert len(reconnects) == 0  # a healthy feed is left alone
+
+    runtime.data_status = "down"
+    asyncio.run(runtime._heal_connection(now))
+    asyncio.run(runtime._heal_connection(now + 30))  # not more often than every two minutes
+    assert len(reconnects) == 1
+    asyncio.run(runtime._heal_connection(now + 200))
+    assert len(reconnects) == 2
+
+    runtime.data_status = "auth_error"  # a reconnect cannot fix a dead token
+    asyncio.run(runtime._heal_connection(now + 500))
+    assert len(reconnects) == 2

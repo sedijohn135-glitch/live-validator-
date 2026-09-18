@@ -49,6 +49,7 @@ LEASE_TTL_S = 30.0
 LEASE_HEARTBEAT_S = 10.0
 IDLE_HEARTBEAT_S = 300.0
 OUTAGE_PAUSE_S = 20.0
+RECONNECT_EVERY_S = 120.0  # while the feed is down, rebuild the link this often
 
 
 class SecretFilter(logging.Filter):
@@ -101,6 +102,7 @@ class Runtime:
         self.started_at = self.clock()
         self._last_outage_alert = 0.0
         self._last_auth_alert = 0.0
+        self._last_forced_reconnect = 0.0
         self._telegram_offset = 0
         self._tasks: list[asyncio.Task] = []
         self._history_loaded: set[tuple[str, str]] = set()
@@ -280,6 +282,19 @@ class Runtime:
                 now,
             )
 
+    async def _heal_connection(self, now: float) -> None:
+        """While the feed is down, force a fresh connection every two minutes.
+
+        `call()` already reconnects on an error it recognises as transient. This is the net under
+        that: whatever wording a broken link arrives in, the link is rebuilt instead of the engine
+        sitting on it for hours. An expired token is excluded — a reconnect cannot fix that.
+        """
+        if self.data_status != "down" or now - self._last_forced_reconnect < RECONNECT_EVERY_S:
+            return
+        self._last_forced_reconnect = now
+        with contextlib.suppress(Exception):
+            await self.ctrader.reconnect()
+
     def _on_data_ok(self) -> None:
         was_down = self.data_status in ("down", "auth_error")
         if self.data_status == "auth_error":
@@ -298,6 +313,7 @@ class Runtime:
     async def tick(self) -> None:
         """One engine pass: quotes, due candles, then the state machine per symbol."""
         now = self.clock()
+        await self._heal_connection(now)
         await self.refresh_quotes()
         for symbol in self.settings.symbols:
             if not self._is_watched(symbol):
