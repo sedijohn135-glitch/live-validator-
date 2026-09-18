@@ -327,3 +327,20 @@ def test_a_service_without_credentials_is_not_a_broken_feed(tmp_path):
     asyncio.run(runtime._ensure_discovered(runtime.clock()))
     assert runtime.data_status == "not_configured"
     assert runtime.health()["data"]["ctrader"] == "not_configured"
+
+
+def test_the_snapshot_says_when_the_engine_is_not_running(tmp_path):
+    """A healthy feed with a dead loop looked perfect from the model's side (incident 2026-09-18)."""
+    runtime, now = runtime_with_candles(tmp_path)
+
+    block = runtime.data_block("XAUUSD", True, now)
+    assert block["engine_ticking"] is False
+    assert "nuk po monitorohen" in block["engine_note"]
+
+    runtime.last_tick_at = now - 5
+    block = runtime.data_block("XAUUSD", True, now)
+    assert block["engine_ticking"] is True
+    assert "engine_note" not in block
+
+    runtime.last_tick_at = now - 600
+    assert runtime.data_block("XAUUSD", True, now)["engine_ticking"] is False

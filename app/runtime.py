@@ -49,6 +49,7 @@ LEASE_HEARTBEAT_S = 10.0
 IDLE_HEARTBEAT_S = 300.0
 OUTAGE_PAUSE_S = 20.0
 RECONNECT_EVERY_S = 120.0  # while the feed is down, rebuild the link this often
+ENGINE_STALE_S = 60.0  # beyond this the loop is not running, whatever the feed says
 DISCOVERY_RETRY_S = 20.0  # symbols must resolve before anything can be polled; keep trying
 
 
@@ -392,6 +393,11 @@ class Runtime:
         }
         # The reason belongs in the answer whenever the feed is unhealthy, not only when it is
         # unusable: a snapshot that still works off cached bars must still say what broke.
+        # A healthy feed with a dead engine looks perfect from here, and a setup submitted into it
+        # would never be watched. Say so on the one surface the model actually reads.
+        block["engine_ticking"] = bool(self.last_tick_at and now - self.last_tick_at <= ENGINE_STALE_S)
+        if not block["engine_ticking"]:
+            block["engine_note"] = "motori nuk po punon — setup-et nuk po monitorohen"
         if not usable or self.data_status != "ok":
             block["detail"] = self.data_error or (
                 "cTrader nuk po kthen të dhëna — kontrollo CTRADER_MCP_CONFIG dhe dërgo /selftest"
