@@ -52,13 +52,18 @@ Evidence is collected **only after price touches the zone**, from closed M1 cand
 where it is closed). Each signal is independent and cheap to compute; the verdict is a balance, not
 a checklist.
 
+Every signal must clear a **materiality floor**: a multiple of ATR(M1), with the live spread as the
+hard floor underneath. Without one, ordinary chop inside a zone confirms itself — a one-tick dip
+below the edge is not a liquidity sweep, a doji is not a rejection, and a two-tick swing is not
+structure. (That was a real defect, found in production on 2026-09-18.)
+
 | Signal | Weight | Definition (LONG; mirror for SHORT) |
 |---|---|---|
-| `RECLAIM` | 2 (primary) | Price traded **below** the zone low (liquidity taken) and within 3 M1 candles closed back **inside or above** the zone. The whale trap / sweep-and-reclaim. |
-| `REJECTION` | 2 (primary) | An M1 or M5 candle wicks into the zone and closes back above it, with the lower wick ≥ 55 % of the candle's range, **or** a bullish engulfing of the previous candle at the zone. |
-| `SHIFT` | 2 (primary) | Micro market-structure shift: after the touch, an M1 **close** above the most recent M1 swing high. |
-| `MOMENTUM` | 1 | An M1 candle in the trade direction with body ≥ 0.9 × ATR(M1), formed at or after the touch. |
-| `ABSORPTION` | 1 | Three consecutive M1 closes at the zone without a single close beyond the far edge — the zone is being defended. |
+| `RECLAIM` | 2 (primary) | Price took out the liquidity level — the zone low, or the running low if price had already traded under it — by ≥ 0.25 × ATR, and within 3 M1 candles closed back past that level by ≥ 0.20 × ATR. A sweep and reclaim inside one candle counts only if that candle is a proper rejection candle. |
+| `REJECTION` | 2 (primary) | A candle of range ≥ 0.60 × ATR wicks into the zone and closes ≥ 0.20 × ATR beyond its edge, with a wick ≥ 55 % of the range and the close in the top third, **or** an engulfing candle with body ≥ 0.60 × ATR closing past the previous candle's extreme. |
+| `SHIFT` | 2 (primary) | An M1 close ≥ 0.15 × ATR beyond the most recent opposing micro-swing — and that swing must itself stand ≥ 0.50 × ATR above the low that followed it. A swing two ticks tall is not a level anyone defends. |
+| `MOMENTUM` | 1 | An M1 candle in the trade direction with body ≥ 0.9 × ATR **and** its close in the top third of its range: an impulse, not a wide candle that gave it back. |
+| `ABSORPTION` | 1 | Three consecutive M1 closes holding the zone's better half, while at least one of them was pressed into the worse half. Drifting through the zone is not a defence. |
 
 **Verdict: enter when `score ≥ 3` and at least one primary signal is present.**
 
@@ -82,16 +87,19 @@ A hold delays the ENTER message and is reported with its reason. The setup stays
 | `KNIFE` | the last 3 M1 candles travelled > 2.5 × ATR(M1) against the trade | a falling knife is not a rejection |
 | `DATA` | quote older than 30 s, synthetic price, or a gap in the M1 series | no evidence without data |
 | `FRESH` | no closed M1 candle since the touch | the first tick into a zone is not evidence |
+| `REACTION` | price has come less than 0.50 × ATR off the extreme made since the touch | price sitting on the low it just made has defended nothing, whatever the patterns say |
 
 ## 3. Not early, not late
 
 `advance` = how far price has already travelled from the entry edge of the zone toward TP1,
 expressed in R (`R = |entry − stop|` of the original idea).
 
-| advance | Verdict |
+| Where price is | Verdict |
 |---|---|
-| ≤ 0.35 R | **ENTER NOW** at the live price |
-| > 0.35 R | **LIMIT** — the move left without you; a pullback entry is computed instead |
+| inside the zone, in its better half | **ENTER NOW** at the live price |
+| inside the zone, in its expensive half | **LIMIT** in the better half — a LONG is never filled above the middle of its own demand zone, because a worse fill is a wider stop and a smaller R on the same idea |
+| outside the zone, ≤ 0.35 R beyond | **ENTER NOW** at the live price |
+| outside the zone, > 0.35 R beyond | **LIMIT** — the move left without you; a pullback entry is computed instead |
 
 The LIMIT price is the first of these that lies between the live price and the zone:
 
@@ -138,6 +146,13 @@ Post-entry alerts, in order:
 | TP1 hit | 🎯 TP1 — stop to the secure level |
 | opposite micro-shift before TP1 | ⚠️ reversal forming — protect what you have |
 | TP2 / TP3 hit, stop hit | 🏁 / 🛑 |
+
+## 5.1 A zone that breaks is not a zone that holds
+
+Two consecutive M1 closes beyond the far edge by ≥ 0.50 × ATR mean the zone is being broken. That is
+**not** a cancellation — only the stop and TP1 cancel — but the evidence gathered so far describes a
+defence that failed, so it is discarded and the watch returns to waiting. If price comes back, the
+confirmation starts from zero.
 
 ## 6. States and messages
 

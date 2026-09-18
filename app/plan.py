@@ -206,6 +206,26 @@ def limit_price(setup: Setup, candles: list[Candle], price: float, ctx) -> tuple
     return edge, "buza e zonës"
 
 
+def in_premium_half(setup: Setup, price: float) -> bool:
+    """A LONG filled above the middle of its own demand zone is buying the expensive edge of it.
+
+    Only while price is still inside the zone. Once it has left, the move is under way and the
+    distance from the zone decides between a market fill and a pullback order.
+    """
+    if not setup.zone_low <= price <= setup.zone_high:
+        return False
+    return price > setup.zone_mid if setup.is_long else price < setup.zone_mid
+
+
+def discount_entry(setup: Setup, candles: list[Candle], price: float, ctx) -> tuple[float, str]:
+    """Where to wait instead of paying the premium half: never worse than the middle of the zone."""
+    level, why = limit_price(setup, candles, price, ctx)
+    middle = setup.zone_mid
+    if setup.is_long:
+        return (level, why) if level <= middle else (middle, "gjysma e lirë e zonës")
+    return (level, why) if level >= middle else (middle, "gjysma e lirë e zonës")
+
+
 def build_plan(setup: Setup, mode: str, entry: float, extreme: float, ctx, notes: list[str] | None = None) -> Plan:
     stop, clamp_notes = clamp_stop(setup, entry, structural_stop(setup, extreme, ctx))
     targets = targets_for(setup, entry)

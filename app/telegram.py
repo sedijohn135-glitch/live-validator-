@@ -156,7 +156,11 @@ def enter_message(data: dict[str, Any], decimals: int) -> str:
 def limit_message(data: dict[str, Any], decimals: int) -> str:
     lines = [
         _head("⏳", "LIMIT — MOS E NDIQ", data["symbol"], data["direction"]),
-        f"Konfirmimi erdhi, por çmimi iku {data.get('advance_r', 0):.2f}R nga zona.",
+        (
+            "Konfirmimi erdhi te gjysma e shtrenjtë e zonës — hyrja vendoset më poshtë."
+            if data.get("reason") == "premium"
+            else f"Konfirmimi erdhi, por çmimi iku {data.get('advance_r', 0):.2f}R nga zona."
+        ),
         f"Urdhër limit: {num(data['entry'], decimals)} ({esc(data.get('entry_why', ''))})",
         f"SL: {num(data['stop'], decimals)} · R: {num(data['risk'], decimals)}",
         _targets_line(data.get("targets", []), data.get("rr", []), decimals),
@@ -247,6 +251,18 @@ def cancel_message(data: dict[str, Any], decimals: int) -> str:
             _head("❌", "SETUPI U ANULUA", data["symbol"], data["direction"]),
             why,
             f"Çmimi: {num(data.get('price'), decimals)}",
+            f"ID: {esc(data['setup_id'])}",
+        ]
+    )
+
+
+def zone_failed_message(data: dict[str, Any], decimals: int) -> str:
+    """Not a cancellation: the zone broke, so the evidence starts over if price comes back."""
+    return "\n".join(
+        [
+            _head("⚠️", "ZONA PO THYHET", data["symbol"], data["direction"]),
+            f"Çmimi mbylli përtej zonës te {num(data.get('price'), decimals)}.",
+            "Evidenca u rivendos. Setupi mbetet gjallë — nëse çmimi kthehet, konfirmimi fillon nga e para.",
             f"ID: {esc(data['setup_id'])}",
         ]
     )

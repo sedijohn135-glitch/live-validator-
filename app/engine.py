@@ -20,7 +20,7 @@ from app import plan as planning
 from app import telegram as tg
 from app.config import Settings
 from app.context import MarketContext
-from app.evidence import SCORE_MIN, Verdict, evaluate, window
+from app.evidence import SCORE_MIN, Verdict, evaluate, window, zone_failed
 from app.market import swing_high_indices, swing_low_indices
 from app.setup_model import Setup, UnusableSetup, normalise
 from app.store import Store, json_loads
@@ -229,11 +229,39 @@ class Engine:
             return
 
         touch_ts = float(computed.get("touch_ts") or now)
+        if zone_failed(setup, ctx, touch_ts):
+            self._zone_failed(setup, setup_id, computed, now, base, decimals)
+            return
         verdict = evaluate(setup, ctx, touch_ts)
         if verdict.ready and not self.paused():
             self._decide(setup, setup_id, computed, ctx, verdict, price, touch_ts, now)
             return
         self._evidence_note(setup, setup_id, computed, verdict, now, base)
+
+    def _zone_failed(
+        self,
+        setup: Setup,
+        setup_id: str,
+        computed: dict[str, Any],
+        now: float,
+        base: dict[str, Any],
+        decimals: int,
+    ) -> None:
+        """Price closed through the zone: the reaction it was building no longer exists.
+
+        The setup is not cancelled — only the stop and TP1 do that. But evidence describing a defence
+        that failed must not be carried forward, so the watch starts over from the next touch.
+        """
+        computed["touch_ts"] = None
+        computed["seen"] = []
+        computed["progress_at"] = 0.0
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE setups SET state = ?, tap_at = NULL, computed_json = ?, score = 0 WHERE id = ?",
+                (WATCHING, json.dumps(computed, default=str), setup_id),
+            )
+            self.store.add_event(conn, setup_id, now, "ZONE_FAILED", base)
+            self._queue(conn, setup_id, f"failed:{int(now)}", tg.zone_failed_message(base, decimals), now)
 
     def _approach_note(
         self,
@@ -309,9 +337,15 @@ class Engine:
         """ENTER NOW while price is still in a fair place, otherwise a recomputed LIMIT."""
         decimals = self._decimals(setup.symbol)
         bars = window(ctx, touch_ts)
+        reason = ""
         if verdict.late:
             entry, entry_why = planning.limit_price(setup, bars, price, ctx)
-            mode = "LIMIT"
+            mode, reason = "LIMIT", "late"
+        elif planning.in_premium_half(setup, price):
+            # Confirmed, but at the expensive edge of the zone: wait for the better half instead of
+            # paying the top of it. A worse fill is a wider stop and a smaller R on the same idea.
+            entry, entry_why = planning.discount_entry(setup, bars, price, ctx)
+            mode, reason = "LIMIT", "premium"
         else:
             entry, entry_why = price, "çmimi live"
             mode = "MARKET"
@@ -324,6 +358,7 @@ class Engine:
             "setup_id": setup_id,
             **built.as_dict(),
             "entry_why": entry_why,
+            "reason": reason,
             "advance_r": verdict.advance_r,
             "signals": [(s.code, s.detail) for s in verdict.signals],
             "score": verdict.score,
