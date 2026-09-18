@@ -1,9 +1,9 @@
-from app.config import BALANCED, STRICT, load_settings, resolve_data_dir
+from app.config import UNIVERSAL, load_settings, resolve_data_dir
 
 
 def test_defaults_without_any_environment():
     settings = load_settings({})
-    assert settings.profile is STRICT
+    assert settings.profile is UNIVERSAL
     assert settings.symbols == ("XAUUSD", "BTCUSD")
     assert not settings.telegram_configured()
     assert not settings.ctrader_configured()
@@ -21,17 +21,16 @@ def test_garbage_environment_never_raises():
             "OWNER_PASSWORD": "short",
         }
     )
-    assert settings.profile is STRICT
+    assert settings.profile is UNIVERSAL
     assert len(settings.warnings) >= 5
     assert settings.symbol("XAUUSD").display_decimals == 2
 
 
-def test_balanced_profile_thresholds():
+def test_the_profile_variable_is_no_longer_used():
+    """One validator, one profile: a leftover VALIDATOR_PROFILE only earns a warning."""
     settings = load_settings({"VALIDATOR_PROFILE": "balanced"})
-    assert settings.profile is BALANCED
-    assert settings.profile.rr_min_trigger == 1.5
-    assert settings.profile.ce_hard_fvg is False
-    assert settings.profile.checklist_min_pos == 6
+    assert settings.profile is UNIVERSAL
+    assert any("VALIDATOR_PROFILE" in warning for warning in settings.warnings)
 
 
 def test_symbol_overrides():

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.config import STRICT, SYMBOL_DEFAULTS, TIMEFRAMES, Profile
+from app.config import SYMBOL_DEFAULTS, TIMEFRAMES, UNIVERSAL, Profile
 from app.context import MarketContext
 from app.market import Candle, CandleStore, session_levels
 from app.timeutil import NY, ny_datetime, parse_ny
@@ -43,7 +43,7 @@ class MarketBuilder:
         symbol: str = "XAUUSD",
         now_ny: str = "2026-09-16 08:10",
         price: float = 5650.0,
-        profile: Profile = STRICT,
+        profile: Profile = UNIVERSAL,
     ) -> None:
         self.symbol = symbol
         self.profile = profile

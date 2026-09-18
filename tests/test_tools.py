@@ -1,4 +1,4 @@
-"""MCP tool surface: flat schemas, annotations, snapshot size and a full submit-to-ENTER pass."""
+"""MCP tool surface: flat schemas, read-only annotations, and a submit that is never refused."""
 
 from __future__ import annotations
 
@@ -10,71 +10,28 @@ from mcp import Client
 from mcp.server.mcpserver import MCPServer
 
 from app import tools as tools_module
-from app.market import CandleStore
-from app.runtime import Runtime
-from app.store import Store
-from tests.app_harness import make_runtime
-from tests.scenario import Scenario
-from tests.test_golden import BASE_SETUP, clean_long_scenario, ts
+from tests.synth import Tape, TapeRuntime
 
 FORBIDDEN_KEYS = ("$ref", "$defs", "anyOf", "oneOf", "allOf", "not", "definitions")
 ALLOWED_TYPES = {"string", "number", "integer", "boolean"}
-
-
-class ScenarioRuntime(Runtime):
-    """A runtime whose market data comes from a synthetic scenario instead of the network."""
-
-    def __init__(self, scenario: Scenario, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.scenario = scenario
-        self._provider = scenario.context_provider()
-
-    def _load(self) -> None:
-        context = self._provider("XAUUSD", self.clock())
-        self.candles = CandleStore(close_grace_s=0.0)
-        for timeframe in ("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"):
-            series = context.store.series("XAUUSD", timeframe)
-            if series:
-                self.candles.merge("XAUUSD", timeframe, series, self.clock() + 10**6)
-        if context.bid is not None:
-            from app.ctrader import Quote
-
-            self.quotes["XAUUSD"] = Quote("XAUUSD", context.bid, context.ask, self.clock())
-            self.spread_samples.setdefault("XAUUSD", __import__("collections").deque(maxlen=1800)).extend(
-                [context.ask - context.bid] * 60
-            )
-        self.last_quote_at = self.clock()
-        self.data_status = "ok"
-
-    async def ensure_history(self, symbol: str, timeframes=None) -> None:
-        self._load()
-
-    async def refresh_candles(self, symbol: str, timeframes, count: int = 3) -> None:
-        self._load()
-
-    async def refresh_quotes_for(self, symbol: str) -> None:
-        self._load()
-
-    async def refresh_quotes(self) -> None:
-        self._load()
+TOOL_NAMES = {
+    "market_snapshot",
+    "market_candles",
+    "validator_rules",
+    "setup_submit",
+    "setup_status",
+    "setup_cancel",
+}
 
 
 def scenario_app(tmp_path):
     """The real tool registration on a bare MCP server: no lifespan, no background tasks."""
-    runtime_base, _fake, telegram = make_runtime(tmp_path)
-    scenario = clean_long_scenario()
-    clock = {"now": ts("2026-09-16 07:46")}
-    runtime = ScenarioRuntime(
-        scenario,
-        runtime_base.settings,
-        Store(str(tmp_path / "validator.db")),
-        ctrader=runtime_base.ctrader,
-        telegram=telegram.client(),
-        clock=lambda: clock["now"],
-    )
+    tape = Tape(price=4300.0)
+    tape.drift(400, step=0.02, span=0.6)
+    runtime, telegram = TapeRuntime.build(tmp_path, tape)
     server = MCPServer(name="live-validator-test")
     tools_module.register(server, runtime)
-    return server, runtime, clock, telegram
+    return server, runtime, tape, telegram
 
 
 def tools_of(server):
@@ -86,62 +43,6 @@ def tools_of(server):
     return asyncio.run(main())
 
 
-# ------------------------------------------------------------------ schema lint
-def test_every_tool_schema_is_flat(tmp_path):
-    """Failure mode G1: Gemini's function calling rejects nested or union schemas."""
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
-    tools = tools_of(server)
-    assert {t.name for t in tools} == {
-        "market_snapshot",
-        "market_candles",
-        "validator_rules",
-        "setup_submit",
-        "setup_status",
-        "setup_cancel",
-    }
-    for tool in tools:
-        schema = tool.input_schema
-        assert schema["type"] == "object"
-        text = json.dumps(schema)
-        for key in FORBIDDEN_KEYS:
-            assert key not in text, f"{tool.name} uses {key}"
-        for name, prop in schema.get("properties", {}).items():
-            assert prop.get("type") in ALLOWED_TYPES, f"{tool.name}.{name} is not a primitive"
-            assert prop.get("description"), f"{tool.name}.{name} has no description"
-            assert "items" not in prop and "properties" not in prop
-        for name in schema.get("required", []):
-            assert name in schema["properties"]
-
-
-def test_every_tool_is_advertised_as_a_read_so_gemini_never_asks_to_confirm(tmp_path):
-    """Deviation D14: a confirmation tap per analysis is what the owner asked us to remove."""
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
-    by_name = {t.name: t for t in tools_of(server)}
-    assert set(by_name) == {
-        "market_snapshot",
-        "market_candles",
-        "validator_rules",
-        "setup_status",
-        "setup_submit",
-        "setup_cancel",
-    }
-    for name, tool in by_name.items():
-        assert tool.annotations.read_only_hint is True, name
-        assert tool.annotations.open_world_hint is False, name
-        assert tool.annotations.destructive_hint is not True, name
-    for name in ("setup_submit", "setup_cancel"):
-        assert by_name[name].annotations.idempotent_hint is True, name
-
-
-def test_optional_parameters_are_not_required(tmp_path):
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
-    submit = next(t for t in tools_of(server) if t.name == "setup_submit")
-    required = set(submit.input_schema["required"])
-    assert "tp2" not in required and "range_high" not in required
-    assert {"symbol", "direction", "entry_low", "rationale"}.issubset(required)
-
-
-# ------------------------------------------------------------------- behaviour
 def call(server, name: str, arguments: dict) -> dict:
     async def main():
         async with Client(server) as client:
@@ -152,69 +53,116 @@ def call(server, name: str, arguments: dict) -> dict:
     return asyncio.run(main())
 
 
+# ------------------------------------------------------------------ schema lint
+def test_every_tool_schema_is_flat(tmp_path):
+    """Failure mode G1: Gemini's function calling rejects nested or union schemas."""
+    server, *_ = scenario_app(tmp_path)
+    tools = tools_of(server)
+    assert {t.name for t in tools} == TOOL_NAMES
+    for tool in tools:
+        schema = tool.input_schema
+        assert schema["type"] == "object"
+        text = json.dumps(schema)
+        for key in FORBIDDEN_KEYS:
+            # As a JSON key, so a parameter called "note" is not mistaken for the "not" keyword.
+            assert f'"{key}":' not in text, f"{tool.name} uses {key}"
+        for name, prop in schema.get("properties", {}).items():
+            assert prop.get("type") in ALLOWED_TYPES, f"{tool.name}.{name} is not a primitive"
+            assert prop.get("description"), f"{tool.name}.{name} has no description"
+            assert "items" not in prop and "properties" not in prop
+        for name in schema.get("required", []):
+            assert name in schema["properties"]
+
+
+def test_every_tool_is_advertised_as_a_read_so_gemini_never_asks_to_confirm(tmp_path):
+    """Deviation D14: a confirmation tap per analysis is what the owner asked us to remove."""
+    server, *_ = scenario_app(tmp_path)
+    by_name = {t.name: t for t in tools_of(server)}
+    assert set(by_name) == TOOL_NAMES
+    for name, tool in by_name.items():
+        assert tool.annotations.read_only_hint is True, name
+        assert tool.annotations.open_world_hint is False, name
+        assert tool.annotations.destructive_hint is not True, name
+    for name in ("setup_submit", "setup_cancel"):
+        assert by_name[name].annotations.idempotent_hint is True, name
+
+
+def test_submit_asks_for_almost_nothing(tmp_path):
+    """The universal contract: a symbol, a stop and an entry. Everything else is optional."""
+    server, *_ = scenario_app(tmp_path)
+    submit = next(t for t in tools_of(server) if t.name == "setup_submit")
+    required = set(submit.input_schema["required"])
+    assert required == {"symbol", "stop_loss"}
+    properties = set(submit.input_schema["properties"])
+    assert {"entry", "entry_low", "entry_high", "tp1", "tp2", "tp3", "direction", "label"} <= properties
+    for gone in ("entry_model", "htf_bias", "checklist_positive", "kill_zone", "pda_type", "valid_until_ny"):
+        assert gone not in properties, f"{gone} belongs to the old strategy-bound validator"
+
+
+# ------------------------------------------------------------------- behaviour
 def test_snapshot_is_compact_and_new_york_timed(tmp_path):
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
+    server, _runtime, tape, _tg = scenario_app(tmp_path)
     payload = call(server, "market_snapshot", {"symbol": "XAUUSD"})
     assert payload["schema"] == "snapshot/1"
-    assert payload["time"]["ny"].startswith("2026-09-16")
-    assert payload["time"]["active_windows"]
-    assert payload["quote"]["bid"] == pytest.approx(5658.0)
+    assert payload["time"]["ny"].startswith("2026-09-")
+    assert payload["quote"]["bid"] == pytest.approx(tape.price)
     assert payload["candles"]["M5"][0][0].startswith("2026-09-")
-    assert len(payload["candles"]["M5"]) == 96
     assert len(json.dumps(payload)) < 60_000  # failure mode G12
 
 
-def test_validator_rules_lists_the_active_profile(tmp_path):
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
+def test_validator_rules_describes_the_evidence_not_a_strategy(tmp_path):
+    server, *_ = scenario_app(tmp_path)
     payload = call(server, "validator_rules", {})
-    assert payload["profile"] == "STRICT"
-    assert payload["thresholds"]["rr_min_plan"] == 2.0
-    assert "ICT_2022" in payload["entry_models"]
-    assert "pda_formed_at_ny" in payload["required_fields"]
+    assert payload["schema"] == "rules/2"
+    assert payload["entry"]["score_min"] == 3
+    assert set(payload["entry"]["primary_signals"]) == {"RECLAIM", "REJECTION", "SHIFT"}
+    assert len(payload["cancellations"]) == 2
+    assert "never rejects" in payload["principle"]
 
 
-def test_submit_snapshot_feed_then_exactly_one_enter(tmp_path):
-    """Snapshot → submit → simulated feed → one ENTER in the outbox, end to end through MCP."""
-    server, runtime, clock, _tg = scenario_app(tmp_path)
+def test_a_setup_is_registered_through_the_tool_and_never_rejected(tmp_path):
+    server, runtime, tape, _tg = scenario_app(tmp_path)
     call(server, "market_snapshot", {"symbol": "XAUUSD"})
-
-    payload = {k: v for k, v in BASE_SETUP.items() if v is not None}
-    result = call(server, "setup_submit", payload)
-    assert result["status"] == "ARMED", result["reasons"]
+    price = tape.price
+    result = call(
+        server,
+        "setup_submit",
+        {"symbol": "XAUUSD", "entry": price - 5, "stop_loss": price - 12, "tp1": price + 20},
+    )
+    assert result["status"] == "registered"
     setup_id = result["setup_id"]
-    assert result["computed"]["expires_at_ny"] == "2026-09-16 09:00"
 
     status = call(server, "setup_status", {"setup_id": setup_id})
-    assert status["state"] == "ARMED"
-
-    clock["now"] = ts("2026-09-16 08:10") + 2
-    asyncio.run(runtime.tick())
-    asyncio.run(runtime.tick())
-
-    enters = runtime.store.query("SELECT dedupe_key FROM outbox WHERE dedupe_key LIKE '%:ENTER'")
-    assert len(enters) == 1
-    assert runtime.store.get_setup(setup_id)["state"] == "TRIGGERED"
+    assert status["state"] == "WATCHING"
+    cards = runtime.store.query("SELECT text FROM outbox WHERE dedupe_key LIKE ?", (f"{setup_id}:registered",))
+    assert len(cards) == 1
 
 
-def test_duplicate_submit_through_the_tool(tmp_path):
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
-    payload = {k: v for k, v in BASE_SETUP.items() if v is not None}
-    first = call(server, "setup_submit", payload)
-    second = call(server, "setup_submit", payload)
-    assert first["status"] == "ARMED"
-    assert second["status"] == "DUPLICATE" and second["setup_id"] == first["setup_id"]
+def test_even_a_contradictory_setup_is_accepted_and_repaired(tmp_path):
+    server, *_ = scenario_app(tmp_path)
+    result = call(
+        server,
+        "setup_submit",
+        {"symbol": "XAUUSD", "direction": "LONG", "entry": 4300.0, "stop_loss": 4310.0, "tp1": 4280.0},
+    )
+    assert result["status"] == "registered"
+    assert result["setup"]["direction"] == "SHORT"
+    assert result["notes"], "a repair must be reported"
 
 
 def test_cancel_through_the_tool(tmp_path):
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
-    payload = {k: v for k, v in BASE_SETUP.items() if v is not None}
-    setup_id = call(server, "setup_submit", payload)["setup_id"]
-    assert call(server, "setup_cancel", {"setup_id": setup_id})["status"] == "CANCELLED"
-    assert call(server, "setup_cancel", {"setup_id": setup_id})["status"] == "ALREADY_CLOSED"
+    server, _runtime, tape, _tg = scenario_app(tmp_path)
+    setup_id = call(
+        server,
+        "setup_submit",
+        {"symbol": "XAUUSD", "entry": tape.price - 5, "stop_loss": tape.price - 12},
+    )["setup_id"]
+    assert call(server, "setup_cancel", {"setup_id": setup_id})["status"] == "cancelled"
+    assert call(server, "setup_cancel", {"setup_id": setup_id})["status"] == "already_closed"
 
 
 def test_market_candles_returns_closed_bars_only(tmp_path):
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
+    server, *_ = scenario_app(tmp_path)
     payload = call(server, "market_candles", {"symbol": "XAUUSD", "timeframe": "M5", "count": 10})
     assert payload["count"] == 10
     assert all(len(row) == 5 for row in payload["candles"])

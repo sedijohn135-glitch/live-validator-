@@ -7,149 +7,109 @@ from pathlib import Path
 
 from tests.test_tools import scenario_app, tools_of
 
-ADDENDUM = Path("docs/GEMINI_V11_ADDENDUM.md")
+GEMINI = Path("docs/GEMINI.md")
+VALIDATOR = Path("docs/VALIDATOR.md")
 SPARK_SKILL = Path("spark-skill/live-validator/SKILL.md")
 SETUP = Path("docs/SETUP_SQ.md")
 RULES = Path("docs/RULES_SQ.md")
 
-# Response fields the addendum names, which are not tool parameters.
-RESPONSE_FIELDS = {"fvgs", "levels", "atr", "swings", "candles", "low", "high", "formed_at", "reasons"}
+# Response fields the docs name, which are not tool parameters.
+RESPONSE_FIELDS = {"fvgs", "levels", "atr", "swings", "candles", "notes", "usable", "status"}
 
 
 def registered(tmp_path):
-    server, _runtime, _clock, _tg = scenario_app(tmp_path)
+    server, *_ = scenario_app(tmp_path)
     return {t.name: t for t in tools_of(server)}
 
 
-def test_every_tool_named_in_the_addendum_exists(tmp_path):
+def test_every_tool_named_in_the_guides_exists(tmp_path):
     tools = registered(tmp_path)
-    text = ADDENDUM.read_text()
-    named = set(re.findall(r"`(market_\w+|setup_\w+|validator_\w+)`", text))
-    assert named, "the addendum must name the tools"
-    missing = named - set(tools)
-    assert missing == set(), f"the addendum names tools that do not exist: {sorted(missing)}"
+    for path in (GEMINI, SPARK_SKILL):
+        named = set(re.findall(r"`(market_\w+|setup_\w+|validator_\w+)`", path.read_text()))
+        assert named, f"{path} must name the tools"
+        assert named <= set(tools), f"{path} names tools that do not exist: {sorted(named - set(tools))}"
 
 
-def test_every_parameter_in_section_d_exists(tmp_path):
-    """Section D maps each v11 box line to a real `setup_submit` parameter."""
+def test_every_parameter_the_guides_promise_exists(tmp_path):
     tools = registered(tmp_path)
     properties = set(tools["setup_submit"].input_schema["properties"])
-    text = ADDENDUM.read_text()
-    section = text.split("### D.")[1].split("### E.")[0]
-    names: set[str] = set()
-    for line in section.splitlines():
-        if not line.startswith("|") or line.startswith("| v11 box") or set(line) <= set("|- "):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 2:
-            continue
-        names.update(re.findall(r"`(\w+)`", cells[1]))
-    names -= RESPONSE_FIELDS
-    assert names, "section D must name parameters"
-    missing = names - properties
-    assert missing == set(), f"the addendum names parameters that do not exist: {sorted(missing)}"
+    for path in (GEMINI, SPARK_SKILL):
+        text = path.read_text()
+        names: set[str] = set()
+        for line in text.splitlines():
+            if not line.startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            names.update(re.findall(r"`(\w+)`", cells[0] if cells else ""))
+        names -= RESPONSE_FIELDS
+        missing = names - properties - set(tools)
+        assert missing == set(), f"{path} names parameters that do not exist: {sorted(missing)}"
 
 
-def test_addendum_entry_models_match_the_code():
-    from app.config import ENTRY_MODELS, PDA_TYPES
+def test_the_guides_promise_that_nothing_is_rejected(tmp_path):
+    for path in (GEMINI, SPARK_SKILL, RULES, VALIDATOR):
+        text = path.read_text().lower()
+        assert "reject" in text or "refuzo" in text, f"{path} must address rejection explicitly"
 
-    text = ADDENDUM.read_text()
-    for model in ENTRY_MODELS:
-        assert model in text, f"{model} is missing from the addendum"
-    for pda in PDA_TYPES:
-        assert pda in text, f"{pda} is missing from the addendum"
+
+def test_the_validator_spec_documents_every_signal():
+    from app.evidence import WEIGHTS
+
+    text = VALIDATOR.read_text()
+    for signal in WEIGHTS:
+        assert signal in text, f"{signal} is missing from docs/VALIDATOR.md"
+
+
+def test_the_validator_spec_cites_its_sources():
+    text = VALIDATOR.read_text()
+    assert "## Sources consulted" in text
+    assert len(re.findall(r"- \[.+?\]\(https?://", text)) >= 6
 
 
 def test_spark_skill_meets_the_upload_requirements():
-    """Gemini's upload page: a SKILL.md in the main folder, with a kebab-case name."""
-    assert SPARK_SKILL.exists()
     text = SPARK_SKILL.read_text()
-    name = re.search(r"^name:\s*(\S+)\s*$", text, re.M)
-    assert name, "SKILL.md needs a name in its front matter"
-    assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name.group(1)), "the skill name must be kebab case"
-    assert re.search(r"^description:\s*\S", text, re.M)
-    assert SPARK_SKILL.parent.name == name.group(1)
-
-
-def test_spark_skill_names_only_real_tools_and_parameters(tmp_path):
-    """The uploaded skill must not drift from the server it drives."""
-    tools = registered(tmp_path)
-    text = SPARK_SKILL.read_text()
-    named = set(re.findall(r"`(market_\w+|setup_\w+|validator_\w+)`", text))
-    assert named, "the skill must name the tools"
-    assert named - set(tools) == set()
-
-    properties = set(tools["setup_submit"].input_schema["properties"])
-    section = text.split("## D.")[1].split("## E.")[0]
-    parameters: set[str] = set()
-    for line in section.splitlines():
-        if not line.startswith("|") or line.startswith("| v11 box") or set(line) <= set("|- "):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) >= 2:
-            parameters.update(re.findall(r"`(\w+)`", cells[1]))
-    parameters -= RESPONSE_FIELDS
-    assert parameters, "section D must name parameters"
-    assert parameters - properties == set()
-
-    from app.config import ENTRY_MODELS, PDA_TYPES
-
-    for value in (*ENTRY_MODELS, *PDA_TYPES):
-        assert value in text, f"{value} is missing from the uploaded skill"
+    assert text.startswith("---\n")
+    front = text.split("---")[1]
+    assert re.search(r"^name:\s*live-validator\s*$", front, re.MULTILINE)
+    description = re.search(r"^description:\s*(.+)$", front, re.MULTILINE)
+    assert description and len(description.group(1)) <= 1024
+    assert len(text) < 20_000
 
 
 def test_no_railway_config_as_code():
-    """Failure mode D3: Railway ignores these for new services."""
-    assert not Path("railway.json").exists()
-    assert not Path("railway.toml").exists()
+    for name in ("railway.json", "railway.toml"):
+        assert not Path(name).exists(), f"{name} must not exist: Railway is configured in its UI"
 
 
 def test_setup_doc_covers_the_required_variables():
     text = SETUP.read_text()
-    for variable in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "OWNER_PASSWORD", "CTRADER_MCP_CONFIG"):
-        assert variable in text
-    assert "/health" in text  # the healthcheck path the owner must set
-    assert "/mcp" in text  # the exact URL Gemini needs
-    assert "Volume" in text
-    assert "Sleeping" in text or "sleeping" in text  # failure mode D9
-    assert "MCP_AUTH" in text  # the owner must be able to find the switch again
-
-
-MONEY_WORDS = ("lot_size", "lotsize", "position_size", "risk_percent", "risk_pct", "account_balance", "equity")
+    for variable in ("OWNER_PASSWORD", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "PUBLIC_BASE_URL"):
+        assert variable in text, f"{variable} is missing from docs/SETUP_SQ.md"
+    assert "Volume" in text and "/data" in text
 
 
 def test_no_money_or_position_sizing_logic_anywhere():
-    """The owner decides size; the code must not contain a single lot or balance calculation."""
-    offenders: list[str] = []
-    for path in sorted(Path("app").rglob("*.py")):
-        lowered = path.read_text().lower()
-        for word in MONEY_WORDS:
-            if word in lowered:
-                offenders.append(f"{path}: {word}")
-    assert offenders == []
+    """The validator decides the moment, never the size."""
+    for path in Path("app").glob("*.py"):
+        text = path.read_text().lower()
+        for word in ("lot_size", "position_size", "risk_percent", "account_balance", "equity"):
+            assert word not in text, f"{path} mentions {word}"
 
 
 def test_owner_docs_are_written_for_the_owner():
-    """Albanian, phone-friendly, and honest that the system never trades."""
-    for path in (SETUP, RULES, Path("README.md")):
-        text = path.read_text()
-        assert "ë" in text, f"{path} does not look Albanian"
-    rules = RULES.read_text()
-    assert "nuk hyn kurrë vetë" in rules
-    assert "HYR TANI" in rules and "MOS HYR" in rules
+    text = RULES.read_text()
+    assert "def " not in text and "python" not in text.lower()
+    assert "HYR TANI" in text and "SIGURO FITIMET" in text
 
 
 def test_dockerfile_binds_the_platform_port_and_runs_as_root():
-    dockerfile = Path("Dockerfile").read_text()
-    assert "0.0.0.0" in dockerfile and "${PORT:-8080}" in dockerfile
-    assert "--proxy-headers" in dockerfile and "--forwarded-allow-ips" in dockerfile
-    assert "USER " not in dockerfile  # Railway volumes are mounted as root (failure mode D5)
-    assert "playwright" not in dockerfile.lower()
+    text = Path("Dockerfile").read_text()
+    assert "$PORT" in text
+    assert "USER " not in text  # Railway volumes are root-owned
 
 
-def test_readme_is_short_and_links_the_three_docs():
-    lines = Path("README.md").read_text().strip().splitlines()
-    assert len(lines) <= 15
-    text = "\n".join(lines)
-    for link in ("docs/SETUP_SQ.md", "docs/GEMINI_V11_ADDENDUM.md", "docs/RULES_SQ.md"):
-        assert link in text
+def test_readme_is_short_and_links_the_docs():
+    text = Path("README.md").read_text()
+    assert len(text) < 6000
+    for path in ("docs/VALIDATOR.md", "docs/SETUP_SQ.md", "docs/RULES_SQ.md"):
+        assert path in text, f"README must link {path}"

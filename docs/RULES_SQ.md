@@ -1,56 +1,85 @@
-# Kur sistemi thotë HYR dhe kur thotë MOS HYR
+# Si vendos validatori (pa kod)
 
-Ky është shpjegimi me fjalë të thjeshta. Nuk ka kod këtu.
+Ky është shpjegimi me fjalë të thjeshta. Analiza është e jotja — validatori merret vetëm me
+**momentin e hyrjes** dhe me **mbrojtjen e fitimit**.
 
-## Çfarë bën sistemi
-Gemini bën analizën dhe dërgon një setup. Sistemi **nuk hyn kurrë vetë në treg** dhe **nuk dërgon kurrë urdhra**.
-Ai vetëm shikon çmimin live 24/7 dhe të thotë njërën nga dy gjërat:
+## Çfarë bën dhe çfarë nuk bën
 
-- 🟢 **HYR TANI** — kushtet u konfirmuan. Hape tregtinë vetë në telefon, me lotin që zgjedh ti.
-- ⛔ / ⌛ / ⚠️ / ❌ — **MOS HYR**. Setup-i u prish, skadoi, e humbi konfirmimin ose u refuzua që në fillim.
+**Nuk bën:**
+- Nuk refuzon asnjë setup. Asnjëherë. Pa marrë parasysh orën, sesionin, kill zone-n, bias-in,
+  premium/discount, modelin apo çdo rregull strategjie.
+- Nuk hyn në treg dhe nuk dërgon urdhra. Kurrë.
+- Nuk të thotë sa lot të hedhësh.
 
-## Kur një setup refuzohet menjëherë (❌)
-- Drejtimi nuk përputhet me bias-in e kohës së madhe.
-- Nivelet janë në rend të gabuar, ose invalidimi është vendosur jashtë vendit.
-- Çmimi i analizës nuk përputhet me çmimin live (Gemini ka gabuar ose ka pritur shumë).
-- Nivelet janë shumë larg çmimit aktual.
-- Lëvizja tashmë ka ndodhur: çmimi ka kaluar TP1.
-- Raporti fitim/humbje është nën 1:2.
-- SL-ja është shumë e ngushtë ose shumë e gjerë për volatilitetin e momentit.
-- Checklist-i i v11 nuk mbush minimumin (p.sh. nën 7 pozitive, ose 3+ negative).
-- **PDA-ja e deklaruar nuk ekziston në të dhënat reale** — ose ka dështuar tashmë.
-- Likuiditeti i kundërt nuk është real, ose thuhet se u mor kur nuk u mor.
-- SHORT shumë afër maksimumit historik pa konfirmim institucional.
-- Nuk ka asnjë Kill Zone të vlefshme para se setup-i të skadojë.
+**Bën:**
+- Pret që çmimi të prekë zonën tënde.
+- Aty mbledh **evidencë live** dhe të thotë **HYR TANI** ose **LIMIT** me çmim të rillogaritur.
+- Rillogarit SL-në nga struktura live, mban objektivat e tua dhe të thotë ku ta **sigurosh fitimin**.
 
-## Kur një setup i pranuar prishet (⛔)
-- Çmimi preku SL-në **para** se të hyje.
-- Një qiri **mbylli trupin** përtej nivelit të invalidimit.
-- Një qiri **mbylli trupin** përtej zonës (CE ose skaji i PDA-së). Fitili lejohet; trupi jo.
-- Koha mbaroi (⌛ SKADOI).
+## Çfarë i duhet
 
-## Kur sistemi thotë HYR (🟢)
-Të gjitha këto duhet të jenë të vërteta në të njëjtën kohë:
+Vetëm: simboli, **hyrja** (ose zona) dhe **SL**. Objektivat janë opsionale — pa to i llogarit vetë
+te 1R, 2R, 3R. Drejtimin e nxjerr nga vendi i SL-së. Çdo gabim i vogël (zonë e përmbysur, objektiv
+në anën e gabuar, drejtim i shkruar gabim) rregullohet dhe të raportohet, nuk refuzohet.
 
-1. Çmimi preku zonën e hyrjes.
-2. Likuiditeti i kundërt u mor (fundi/maja u fshi).
-3. Erdhi konfirmimi në kohën e vogël: CISD + një qiri displacement (ose konfirmimi specifik i modelit).
-4. Konfirmimi erdhi **shpejt** pas prekjes, jo shumë qirinj më vonë.
-5. Jemi brenda Kill Zone-s së modelit, jo në drekë, jo me treg të mbyllur, jo në lajme.
-6. Spread-i është normal.
-7. Çmimi live nuk ka ikur: hyrja është ende brenda kufirit dhe RR-ja mbetet e mirë.
-8. Të dhënat janë të freskëta dhe pa ndërprerje.
-9. Nuk ka një tregti të hapur në drejtim të kundërt.
-10. Pikët (score) e cilësisë kalojnë minimumin.
+## Evidenca — kur thotë HYR TANI
 
-## Kur sistemi thotë "e humbëm" (⚠️)
-- **Spread i lartë** dy qirinj radhazi.
-- **Çmimi iku** përtej kufirit — v11: mos e ndiq çmimin.
-- Konfirmimi ndodhi gjatë një ndërprerjeje të të dhënave.
-- Ishe në pauzë (`/pause`).
+Pas prekjes së zonës numëron pikë nga qirinjtë M1 live. **Duhen 3 pikë dhe së paku një sinjal
+kryesor:**
 
-Në çdo dyshim përgjigja është MOS HYR. Një tregti e humbur nuk kushton; një HYR e gabuar kushton.
+| Sinjali | Pikë | Çfarë do të thotë |
+|---|---|---|
+| RECLAIM | 2 (kryesor) | Çmimi shkoi përtej zonës, mori likuiditetin, dhe u kthye brenda |
+| REJECTION | 2 (kryesor) | Bisht refuzimi ose qiri gëlltitës te zona |
+| SHIFT | 2 (kryesor) | Struktura mikro u thye në drejtimin tënd |
+| MOMENTUM | 1 | Qiri me trup të fortë (≥ 0.9 ATR) në drejtimin tënd |
+| ABSORPTION | 1 | 3 qirinj radhazi pa e humbur zonën |
 
-## Pas hyrjes
-Sistemi vazhdon të shikojë dhe të njofton për TP1/TP2/TP3, SL, ose 🚪 **DIL NGA TREGU** nëse struktura prishet.
-Lot, rrezik dhe vendimi përfundimtar janë gjithmonë të tutë.
+Shembuj: RECLAIM + MOMENTUM = 3 ✅ · REJECTION + ABSORPTION = 3 ✅ · MOMENTUM + ABSORPTION = 2 ❌
+(zona reagoi, por asgjë nuk e konfirmoi).
+
+Kjo është pika e balancës: kurrë një sinjal i vetëm (shumë herët), kurrë gjashtë kushte (shumë vonë).
+
+## Pritje — nuk është refuzim
+
+Këto **e vonojnë** mesazhin HYR, nuk e vrasin setupin:
+- spread i lartë (do ta paguaje ti spike-un),
+- çmimi po bie/ngjitet si thikë përmes zonës,
+- të dhënat live mungojnë ose janë të vjetra,
+- ende s'ka qiri M1 të mbyllur pas prekjes.
+
+## HYR TANI apo LIMIT
+
+Nëse çmimi ka ikur më shumë se **0.35R** nga zona para se evidenca të mbushej, nuk të thotë ta ndjekësh.
+Të jep një **LIMIT** me çmim të rillogaritur: 50% i qiriut të konfirmimit, ose FVG-ja M1 që u krijua,
+ose buza e zonës.
+
+## SL-ja e rillogaritur
+
+SL = ekstremi i konfirmimit ± `max(1.5 × ATR(M1), 2 × spread, 2 tick)`.
+Struktura jep nivelin, ATR jep hapësirën — që një bisht normal të mos e marrë stopin.
+
+Kufijtë: kurrë më i gjerë se SL-ja jote, kurrë më i ngushtë se 0.35R e saj.
+
+## Siguro fitimet
+
+Pika ku çmimi kthehet më shpesh para TP1. Llogaritet te hyrja: swing-u më i afërt M5/M15, ose niveli
+i sesionit (PDH/PDL, Azia, Londra, mesnata NY), ose numri i rrumbullakët — cilido është më afër, por
+jo më larg se 1R.
+
+Kur çmimi e prek: **🛡️ SIGURO FITIMET** — mbyll një pjesë dhe vendos SL-në te hyrja.
+Pastaj: 1R → SL në BE, TP1 → SL te niveli i sigurimit, dhe nëse struktura thyhet kundër teje para
+TP1 → ⚠️ paralajmërim kthimi.
+
+## Anulimi — vetëm dy raste
+
+1. **SL u prek para hyrjes** → setupi u anulua.
+2. **TP1 u prek para hyrjes** → lëvizja iku pa ty.
+
+Asgjë tjetër nuk e anulon. S'ka skadim, s'ka fund sesioni, s'ka lajme.
+
+## Mesazhet që merr
+
+📝 regjistrim · 👀 çmimi po afrohet · 🎯 zona u prek · 🔎 evidenca po ndërtohet · ✅ HYR TANI ·
+⏳ LIMIT · 📥 limiti u mbush · 🛡️ siguro fitimet · 🔁 SL në BE · ⚠️ shenja kthimi · 🎯 TP · 🛑 SL ·
+❌ anulim.

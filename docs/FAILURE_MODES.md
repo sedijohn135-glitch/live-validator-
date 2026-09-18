@@ -31,10 +31,10 @@ that is actually in the code and the test that proves it.
 | G5 | Clients, codes and tokens live in SQLite on the volume | `test_app.py::test_tokens_survive_a_restart_on_the_same_database` |
 | G6 | 24 h access tokens, refresh rotation with a 10-minute grace window | `test_app.py::test_full_oauth_flow_and_refresh_rotation` (the retried refresh still works) |
 | G7 | CSRF bound to the transaction, constant-time compare, 5 failures per IP / 20 globally, Telegram alert | `test_app.py::test_login_lockout_after_repeated_failures` |
-| G8 | Fingerprint dedupe inside `DEDUP_WINDOW_MIN` | `test_golden.py::test_15_duplicate_submit_returns_the_same_setup`, `test_tools.py::test_duplicate_submit_through_the_tool` |
-| G9 | G-06 price drift and G-07 level range guards, plus tool descriptions | `test_golden.py::test_08_hallucinated_prices_are_rejected` |
-| G10 | The snapshot prints New York times; `setup_submit` takes `pda_formed_at_ny` | `test_timeutil.py` DST tests, `test_golden.py::test_16_dst_days_keep_the_kill_zone_and_expiry` |
-| G11 | Gemini's one-tap confirmation is documented | `docs/SETUP_SQ.md` step 10, `docs/GEMINI_V11_ADDENDUM.md` section D |
+| G8 | Each submission is its own setup; the guides tell Gemini to check `setup_status` first | `docs/GEMINI.md` section F, `spark-skill/live-validator/SKILL.md` section E |
+| G9 | Prices come from the snapshot; a hallucinated level simply never gets touched | `test_tools.py::test_snapshot_is_compact_and_new_york_timed`, `docs/GEMINI.md` section B |
+| G10 | The snapshot prints New York times, and no submitted field carries a time at all | `test_timeutil.py` DST tests, `test_tools.py::test_submit_asks_for_almost_nothing` |
+| G11 | Gemini's one-tap confirmation is documented | `docs/SETUP_SQ.md` step 10, `docs/GEMINI.md` section C |
 | G12 | Fixed candle counts, compact arrays, 15-second cache | `test_tools.py::test_snapshot_is_compact_and_new_york_timed` (< 60 KB) |
 | G13 | `/mcp` is the exact documented URL | `test_app.py::test_mcp_path_without_trailing_slash_is_the_endpoint` |
 | G14 | Background tasks start from the lifespan, once | `test_app.py::test_background_tasks_start_once_across_many_requests` |
@@ -49,11 +49,11 @@ that is actually in the code and the test that proves it.
 | C4 | Only the nine documented periods are ever sent | `test_ctrader.py::test_unsupported_timeframe_is_refused_before_the_call` |
 | C5 | History requests are chunked at 720 hours | `test_ctrader.py::test_wide_history_windows_are_chunked` |
 | C6 | `CandleStore.merge` drops any bar that is not closed, and the adapter drops future closes | `test_market.py::test_store_drops_forming_candles`, `test_ctrader.py::test_candles_are_decoded_and_forming_bars_dropped` |
-| C7 | `AuthError` pauses the engine, alerts the owner and is fixed with `/ctrader` | `test_ctrader.py::test_auth_style_errors_are_classified_as_auth`, `::test_hot_swap_reconnects_and_rediscovers`, `test_golden.py::test_05a_outage_over_the_trigger_bar_becomes_missed` |
+| C7 | `AuthError` pauses the engine, alerts the owner hourly and is fixed with `/ctrader` | `test_ctrader.py::test_auth_style_errors_are_classified_as_auth`, `test_feed.py::test_the_token_warning_repeats_instead_of_firing_once_forever` |
 | C8 | Token-bucket limiter (20/s general, 4/s historical) and backoff | `test_ctrader.py::test_rate_limiter_spaces_historical_calls`, `test_failure_modes.py::test_rate_limit_errors_are_data_errors_not_crashes` |
 | C9 | `classify()` reads the whole exception chain and the error text of an `is_error` result | `test_ctrader.py::test_plain_string_errors_are_handled` |
 | C10 | `SYMBOL_MAP` → exact → case-insensitive → unique prefix, with a warning when ambiguous | `test_ctrader.py::test_discovery_records_the_profile_and_never_calls_trading_tools` |
-| C11 | Every message says "IC Markets cTrader"; `SETUP_SQ.md` tells the owner to execute there | `test_telegram.py::test_enter_message_shows_the_chase_limit_and_validity`, `docs/SETUP_SQ.md` |
+| C11 | Prices in every message come from the IC Markets feed the snapshot uses | `test_telegram.py::test_the_enter_message_carries_the_whole_decision`, `docs/SETUP_SQ.md` |
 | C12 | Market-hours schedule; outage alerts are suppressed while the market is closed | `test_timeutil.py::test_market_hours_gold`, `::test_daily_break_applies_to_btc` |
 | C13 | Candle timestamps are treated as open times and checked in `/selftest` | `test_market.py::test_store_merges_by_open_timestamp`, `runtime.selftest()` alignment lines |
 
@@ -61,19 +61,20 @@ that is actually in the code and the test that proves it.
 
 | # | Mitigation in the code | Proof |
 |---|---|---|
-| E1 | State change, audit event and outbox row share one transaction; the dedupe key is unique | `test_golden.py::test_06_restart_between_transaction_and_send_delivers_exactly_once` |
-| E2 | Replay turns a late confirmation into MISSED unless it is within `LATE_TRIGGER_MAX_S` | `test_golden.py::test_05a_...`, `::test_05b_short_outage_still_enters_with_a_delay_note` |
-| E3 | T-07 refuses a quote older than `QUOTE_MAX_AGE_S` | `test_failure_modes.py::test_enter_is_refused_on_a_stale_quote` |
-| E4 | T-06 spread cap, time blocks and the news blackout | `test_golden.py::test_14_spread_spike_over_two_bars_is_missed` |
-| E5 | The ENTER message carries the chase limit and a five-minute validity | `test_telegram.py::test_enter_message_shows_the_chase_limit_and_validity` |
-| E6 | Invalidation needs a body close on the respect timeframe; wicks are allowed | `test_rules.py::test_l02_and_l03_use_body_closes`, `test_golden.py::test_11b_wick_below_ce_does_not_trigger` |
-| E7 | Every window is computed in `America/New_York` | `test_timeutil.py` DST tests, `test_golden.py::test_16_...` |
-| E8 | A candle that touches both TP and SL counts as SL | `test_engine.py::test_same_candle_tp_and_sl_counts_as_sl` |
-| E9 | Expiry is clamped to the Friday cutoff and the daily close | `test_failure_modes.py::test_gold_setups_expire_at_the_friday_cutoff` |
-| E10 | `BTC_WEEKEND_ENTRIES` is off by default | `test_failure_modes.py::test_btc_weekend_entries_are_off_by_default` |
+| E1 | State change, audit event and outbox row share one transaction; the dedupe key is unique | `test_engine.py::test_the_full_path_from_registration_to_enter_now` (one message per transition) |
+| E2 | Evidence is read from closed M1 candles, so a gap in ticks cannot invent a confirmation | `test_evidence.py::test_the_first_tick_into_the_zone_is_never_enough` |
+| E3 | A stale or synthetic quote holds the entry (never cancels it) | `test_failure_modes.py::test_enter_is_held_on_a_stale_quote` |
+| E4 | A spread spike or a falling knife holds the entry until the market settles | `test_evidence.py::test_a_wide_spread_holds_the_entry_without_killing_the_setup`, `::test_a_falling_knife_holds_the_entry` |
+| E5 | The ENTER message carries the recomputed stop, the targets and the secure level | `test_telegram.py::test_the_enter_message_carries_the_whole_decision` |
+| E6 | A price that ran more than 0.35 R becomes a LIMIT instead of a chase | `test_engine.py::test_a_runaway_price_becomes_a_limit_not_a_chase` |
+| E7 | Every window in the snapshot is computed in `America/New_York` | `test_timeutil.py` DST tests |
+| E8 | The stop is checked before the targets, so a candle through both counts as the stop | `test_engine.py::test_the_stop_after_entry_closes_the_setup` |
+| E9 | A setup never expires: only its stop or TP1 can close it | `test_failure_modes.py::test_a_setup_waits_instead_of_expiring_over_the_weekend` |
+| E10 | No clock and no calendar can cancel a setup | `test_failure_modes.py::test_no_clock_and_no_calendar_can_cancel_a_setup` |
 | E11 | Comparisons use full precision; rounding happens only in message text | `test_failure_modes.py::test_rounding_never_changes_a_decision` |
 | E12 | `/selftest` warns when the quote timestamp is more than 5 s from the server clock | `runtime.selftest()` |
-| E13 | The news cache fails open and the ENTER message says so | `test_news.py::test_a_broken_feed_never_blocks_a_trade`, `::test_fetch_failure_marks_the_cache_not_ok` |
+| E13 | The recomputed stop is never wider than the submitted one, nor tighter than 0.35 R of it | `test_plan.py::test_the_new_stop_is_never_wider_than_the_one_the_setup_gave`, `::test_the_new_stop_is_never_tighter_than_a_third_of_the_original_risk` |
+| E14 | The owner is told where price can turn before TP1, and when to move to break-even | `test_engine.py::test_after_entry_the_owner_is_told_where_to_secure_the_profit` |
 
 ## Telegram
 

@@ -368,7 +368,7 @@ def build_snapshot(
     notes = [
         "times are New York",
         "candle time = open time",
-        "use formed_at exactly in setup_submit",
+        "send the setup with entry/zone, stop and targets — nothing else is required",
     ]
     if data is not None and not data.get("usable", True):
         notes.insert(

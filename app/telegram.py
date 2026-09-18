@@ -52,126 +52,211 @@ def split_message(text: str, limit: int = MAX_MESSAGE) -> list[str]:
 
 
 # --------------------------------------------------------------------- templates
+DIRECTION_WORD = {"LONG": "BLERJE", "SHORT": "SHITJE"}
+
+
+def _head(emoji: str, title: str, symbol: str, direction: str) -> str:
+    return f"{emoji} <b>{title}</b> — {esc(DIRECTION_WORD.get(direction, direction))} {esc(symbol)}"
+
+
+def _targets_line(targets: list[float], rr: list[float], decimals: int) -> str:
+    if not targets:
+        return "Objektivat: -"
+    parts = []
+    for i, target in enumerate(targets):
+        multiple = f" ({rr[i]:.1f}R)" if i < len(rr) else ""
+        parts.append(f"TP{i + 1} {num(target, decimals)}{multiple}")
+    return " · ".join(parts)
+
+
+def _evidence_lines(data: dict[str, Any]) -> list[str]:
+    signals = data.get("signals") or []
+    if not signals:
+        return []
+    codes = " + ".join(esc(code) for code, _detail in signals)
+    lines = [f"Evidenca: {codes} ({data.get('score', 0)} pikë)"]
+    lines += [f"  • {esc(detail)}" for _code, detail in signals]
+    return lines
+
+
+def _notes_lines(notes: list[str]) -> list[str]:
+    return [f"ℹ️ {esc(note)}" for note in (notes or [])[:4]]
+
+
+def registered_message(data: dict[str, Any], decimals: int) -> str:
+    """Every accepted setup is acknowledged in full: nothing is ever silently refused."""
+    lines = [
+        _head("📝", "SETUP I REGJISTRUAR", data["symbol"], data["direction"]),
+        f"Zona: {num(data['zone_low'], decimals)} – {num(data['zone_high'], decimals)}",
+        f"SL: {num(data['stop'], decimals)} · R: {num(data['risk'], decimals)}",
+        _targets_line(data.get("targets", []), data.get("rr", []), decimals),
+        f"Çmimi tani: {num(data.get('price'), decimals)} · largësia nga zona: {num(data.get('distance'), decimals)}",
+        "Po monitorohet. Vendimi vjen kur zona të preket.",
+    ]
+    lines += _notes_lines(data.get("notes", []))
+    lines.append(f"ID: {esc(data['setup_id'])}")
+    return "\n".join(lines)
+
+
+def approach_message(data: dict[str, Any], decimals: int) -> str:
+    return "\n".join(
+        [
+            _head("👀", "ÇMIMI PO AFROHET", data["symbol"], data["direction"]),
+            f"Çmimi: {num(data.get('price'), decimals)} · zona: {num(data['zone_low'], decimals)}"
+            f" – {num(data['zone_high'], decimals)}",
+            f"Largësia: {num(data.get('distance'), decimals)}",
+            f"ID: {esc(data['setup_id'])}",
+        ]
+    )
+
+
+def touch_message(data: dict[str, Any], decimals: int) -> str:
+    return "\n".join(
+        [
+            _head("🎯", "ZONA U PREK", data["symbol"], data["direction"]),
+            f"Çmimi: {num(data.get('price'), decimals)} · spread: {num(data.get('spread'), decimals)}",
+            "Po mbledh evidencë live. Asnjë hyrje pa konfirmim.",
+            f"ID: {esc(data['setup_id'])}",
+        ]
+    )
+
+
+def evidence_message(data: dict[str, Any]) -> str:
+    """Progress at the zone: what has confirmed so far and what is still holding it back."""
+    lines = [
+        _head("🔎", "EVIDENCA PO NDËRTOHET", data["symbol"], data["direction"]),
+    ]
+    lines += _evidence_lines(data) or ["Evidenca: ende asnjë sinjal"]
+    for hold in data.get("holds", []):
+        lines.append(f"⏸️ {esc(hold)}")
+    lines.append(f"Nevojiten {esc(data.get('score_min', 3))} pikë dhe një sinjal kryesor.")
+    lines.append(f"ID: {esc(data['setup_id'])}")
+    return "\n".join(lines)
+
+
 def enter_message(data: dict[str, Any], decimals: int) -> str:
-    long = data["direction"] == "LONG"
-    icon = "🟢" if long else "🔴"
-    side = "BUY" if long else "SELL"
-    price_kind = "ask" if long else "bid"
-    comparison = "&gt;" if long else "&lt;"
     lines = [
-        f"{icon} <b>HYR TANI — {side} {esc(data['symbol'])}</b>",
-        f"Çmimi: <b>@{num(data['entry'], decimals)}</b> ({price_kind}) · spread {num(data['spread'], decimals)}",
-        f"SL: <b>{num(data['stop_loss'], decimals)}</b>",
+        _head("✅", "HYR TANI", data["symbol"], data["direction"]),
+        f"Hyrje: {num(data['entry'], decimals)} (treg)",
+        f"SL: {num(data['stop'], decimals)} · R: {num(data['risk'], decimals)}",
+        _targets_line(data.get("targets", []), data.get("rr", []), decimals),
+        f"🛡️ Siguro fitimet te {num(data['secure_at'], decimals)} ({esc(data.get('secure_why', ''))})",
     ]
-    tps = f"TP1: {num(data['tp1'], decimals)}"
-    if data.get("tp2") is not None:
-        tps += f" · TP2: {num(data['tp2'], decimals)}"
-    if data.get("tp3") is not None:
-        tps += f" · TP3: {num(data['tp3'], decimals)}"
-    lines.append(tps)
-    lines.append(f"RR: 1:{data['rr']:.2f} ({esc(data['target_label'])})")
+    lines += _evidence_lines(data)
     lines.append(
-        f"⛔ Mos hyr nëse çmimi {comparison} {num(data['chase_limit'], decimals)} "
-        f"· vlen deri {esc(data['valid_until'])} NY"
+        f"Zona u prek {esc(data.get('touch_ny', '-'))} NY · {esc(data.get('bars', 0))} qirinj M1 "
+        f"· spread {num(data.get('spread'), decimals)}"
     )
-    lines.append(f"Model: {esc(data['model'])} · LTF {esc(data['ltf'])} · {esc(data['window'])}")
-    lines.append(f"Konfirmime: {esc(data['checks'])}")
-    score = f"Score: {data['score']}/7"
-    if data.get("pda_unverified"):
-        score += " · ⚠️ PDA e paverifikuar"
-    if data.get("news_down"):
-        score += " · ⚠️ filtri i lajmeve jashtë funksionit"
-    if data.get("delay_s"):
-        score += f" · vonesë {int(data['delay_s'])}s"
-    lines.append(score)
-    lines.append(f"Burimi: IC Markets cTrader · ID: {esc(data['id'])} · {esc(data['time'])} NY")
+    lines += _notes_lines(data.get("notes", []))
+    lines.append(f"ID: {esc(data['setup_id'])}")
     return "\n".join(lines)
 
 
-def armed_message(data: dict[str, Any], decimals: int) -> str:
-    side = "BUY" if data["direction"] == "LONG" else "SELL"
+def limit_message(data: dict[str, Any], decimals: int) -> str:
     lines = [
-        f"🎯 <b>SETUP NË MONITORIM</b> — {side} {esc(data['symbol'])}",
-        f"Zona: {num(data['entry_low'], decimals)} – {num(data['entry_high'], decimals)} "
-        f"· SL {num(data['stop_loss'], decimals)}",
+        _head("⏳", "LIMIT — MOS E NDIQ", data["symbol"], data["direction"]),
+        f"Konfirmimi erdhi, por çmimi iku {data.get('advance_r', 0):.2f}R nga zona.",
+        f"Urdhër limit: {num(data['entry'], decimals)} ({esc(data.get('entry_why', ''))})",
+        f"SL: {num(data['stop'], decimals)} · R: {num(data['risk'], decimals)}",
+        _targets_line(data.get("targets", []), data.get("rr", []), decimals),
+        f"🛡️ Siguro fitimet te {num(data['secure_at'], decimals)} ({esc(data.get('secure_why', ''))})",
     ]
-    tps = f"TP1 {num(data['tp1'], decimals)}"
-    if data.get("tp2") is not None:
-        tps += f" · TP2 {num(data['tp2'], decimals)}"
-    if data.get("tp3") is not None:
-        tps += f" · TP3 {num(data['tp3'], decimals)}"
-    rr = data.get("rr_plan")
-    lines.append(tps + (f" · RR plan 1:{rr:.2f}" if rr else ""))
-    lines.append(f"Model: {esc(data['model'])} · LTF {esc(data['ltf'])}")
-    lines.append(f"Pret: {esc(data['waits_for'])}")
-    expires = f"Skadon: {esc(data['expires'])} NY"
-    if data.get("news"):
-        expires += f" · Lajme: {esc(data['news'])}"
-    lines.append(expires)
-    lines.append(f"ID: {esc(data['id'])}")
+    lines += _evidence_lines(data)
+    lines += _notes_lines(data.get("notes", []))
+    lines.append(f"ID: {esc(data['setup_id'])}")
     return "\n".join(lines)
 
 
-def rejected_message(symbol: str, direction: str, reasons: list[str], setup_id: str) -> str:
-    side = "BUY" if direction == "LONG" else "SELL"
-    lines = [f"❌ <b>SETUP I REFUZUAR</b> — {side} {esc(symbol)}"]
-    lines += [f"• {esc(reason)}" for reason in reasons]
-    lines.append(f"Mos hyr. ID: {esc(setup_id)}")
-    return "\n".join(lines)
-
-
-def invalidated_message(symbol: str, direction: str, reason: str, setup_id: str, time_ny: str, replay: bool) -> str:
-    side = "BUY" if direction == "LONG" else "SELL"
-    suffix = " (gjatë ndërprerjes)" if replay else ""
-    return (
-        f"⛔ <b>MOS HYR — SETUP I ANULUAR</b> — {side} {esc(symbol)}\n"
-        f"Arsyeja: {esc(reason)}{suffix}\n"
-        f"ID: {esc(setup_id)} · {esc(time_ny)} NY"
+def filled_message(data: dict[str, Any], decimals: int) -> str:
+    return "\n".join(
+        [
+            _head("📥", "LIMIT U MBUSH", data["symbol"], data["direction"]),
+            f"Hyrje: {num(data['entry'], decimals)} · SL: {num(data['stop'], decimals)}",
+            f"🛡️ Siguro fitimet te {num(data['secure_at'], decimals)} ({esc(data.get('secure_why', ''))})",
+            f"ID: {esc(data['setup_id'])}",
+        ]
     )
 
 
-def expired_message(symbol: str, direction: str, setup_id: str, time_ny: str) -> str:
-    side = "BUY" if direction == "LONG" else "SELL"
-    return (
-        f"⌛ <b>SKADOI</b> — {side} {esc(symbol)}: nuk u konfirmua deri {esc(time_ny)} NY. "
-        f"Mos hyr. ID: {esc(setup_id)}"
+def secure_message(data: dict[str, Any], decimals: int) -> str:
+    return "\n".join(
+        [
+            _head("🛡️", "SIGURO FITIMET", data["symbol"], data["direction"]),
+            f"Çmimi arriti {num(data['secure_at'], decimals)} ({esc(data.get('secure_why', ''))})"
+            f" = {data.get('secure_r', 0):.2f}R",
+            "Mbyll një pjesë dhe vendos SL-në te hyrja. Këtu çmimi kthehet më shpesh.",
+            f"ID: {esc(data['setup_id'])}",
+        ]
     )
 
 
-def missed_message(symbol: str, direction: str, reason: str, setup_id: str) -> str:
-    side = "BUY" if direction == "LONG" else "SELL"
-    return (
-        f"⚠️ <b>KONFIRMIM I HUMBUR</b> — {side} {esc(symbol)}: {esc(reason)}. "
-        f"Mos e ndiq çmimin. ID: {esc(setup_id)}"
+def breakeven_message(data: dict[str, Any], decimals: int) -> str:
+    return "\n".join(
+        [
+            _head("🔁", "SL NË HYRJE (BE)", data["symbol"], data["direction"]),
+            f"Çmimi kaloi 1R ({num(data.get('price'), decimals)}). Tregtia nuk mund të humbasë më.",
+            f"ID: {esc(data['setup_id'])}",
+        ]
     )
 
 
-def replaced_message(old_id: str, new_id: str) -> str:
-    return f"♻️ Setup {esc(old_id)} u zëvendësua nga {esc(new_id)}."
+def reversal_message(data: dict[str, Any], decimals: int) -> str:
+    return "\n".join(
+        [
+            _head("⚠️", "SHENJA KTHIMI", data["symbol"], data["direction"]),
+            f"Struktura mikro u thye kundër teje te {num(data.get('price'), decimals)} para TP1.",
+            "Mbro fitimin: mbyll pjesë ose ngushto SL-në.",
+            f"ID: {esc(data['setup_id'])}",
+        ]
+    )
 
 
-def cancelled_message(setup_id: str) -> str:
-    return f"🗑️ Setup {esc(setup_id)} u anulua me kërkesë."
+def tp_message(data: dict[str, Any], decimals: int) -> str:
+    n = data.get("n", 1)
+    emoji = "🏁" if n >= 3 else "🎯"
+    trail = "Trego SL-në te niveli i sigurimit." if n == 1 else "Trego SL-në te TP-ja e mëparshme."
+    return "\n".join(
+        [
+            _head(emoji, f"TP{n} U ARRIT", data["symbol"], data["direction"]),
+            f"Çmimi: {num(data.get('price'), decimals)} · {data.get('r_multiple', 0):.2f}R",
+            trail,
+            f"ID: {esc(data['setup_id'])}",
+        ]
+    )
 
 
-def exit_message(symbol: str, direction: str, reason: str, setup_id: str) -> str:
-    side = "BUY" if direction == "LONG" else "SELL"
-    return f"🚪 <b>DIL NGA TREGU</b> — {side} {esc(symbol)}: {esc(reason)}. ID: {esc(setup_id)}"
+def sl_message(data: dict[str, Any], decimals: int) -> str:
+    return "\n".join(
+        [
+            _head("🛑", "SL U PREK", data["symbol"], data["direction"]),
+            f"Çmimi: {num(data.get('price'), decimals)}. Tregtia mbaroi.",
+            f"ID: {esc(data['setup_id'])}",
+        ]
+    )
 
 
-def tp_message(symbol: str, direction: str, n: int, r_multiple: float, setup_id: str) -> str:
-    side = "BUY" if direction == "LONG" else "SELL"
-    return f"✅ TP{n} u arrit — {esc(symbol)} {side} (+{r_multiple:.2f}R) · ID {esc(setup_id)}"
+def cancel_message(data: dict[str, Any], decimals: int) -> str:
+    """One of the only two cancellations there are (docs/VALIDATOR.md §1.3)."""
+    if data.get("reason") == "TP1_FIRST":
+        why = "TP1 u prek para se çmimi të hynte në zonë — lëvizja shkoi pa ty."
+    else:
+        why = "SL u prek para se çmimi të hynte në zonë — ideja u thye para hyrjes."
+    return "\n".join(
+        [
+            _head("❌", "SETUPI U ANULUA", data["symbol"], data["direction"]),
+            why,
+            f"Çmimi: {num(data.get('price'), decimals)}",
+            f"ID: {esc(data['setup_id'])}",
+        ]
+    )
 
 
-def sl_message(symbol: str, direction: str, setup_id: str) -> str:
-    side = "BUY" if direction == "LONG" else "SELL"
-    return f"❌ SL u godit — {esc(symbol)} {side} (−1R) · ID {esc(setup_id)}"
+def manual_cancel_message(setup_id: str) -> str:
+    return f"🚫 Setupi {esc(setup_id)} u anulua me dorë."
 
 
-def timeout_message(symbol: str, direction: str, setup_id: str) -> str:
-    side = "BUY" if direction == "LONG" else "SELL"
-    return f"⏹️ Ndjekja mbaroi pa TP/SL — {esc(symbol)} {side} · ID {esc(setup_id)}"
+def unusable_message(reason: str) -> str:
+    return f"⚠️ Setupi s'u lexua dot: {esc(reason)}. Dërgo së paku hyrjen dhe SL-në."
 
 
 DATA_DOWN = "📡 <b>TË DHËNAT RANË</b> — cTrader: {reason}\nMonitorimi është në pauzë: asnjë HYR pa të dhëna."
@@ -183,8 +268,8 @@ AUTH_EXPIRED = (
 )
 RESTORED = "✅ Të dhënat u rikthyen. Periudha e humbur u kontrollua: {summary}."
 TRADING_PROFILE = (
-    "⚠️ Tokeni i cTrader ka leje tregtimi. Kodi s'i përdor kurrë; "
-    "për siguri përdor profilin vetëm-të-dhëna nëse ofrohet."
+    "⚠️ Tokeni i cTrader ka profil tregtimi. Validatori përdor vetëm mjete read-only, "
+    "por përdor një token vetëm-lexim nëse mundesh."
 )
 NO_VOLUME = "⚠️ S'ka Volume në Railway: lidhja me Gemini dhe setup-et humbin në çdo deploy. Shto Volume te /data."
 GEMINI_LINKED = "🔗 Gemini u lidh me validatorin."
@@ -201,18 +286,15 @@ HELP_TEXT = (
     "/ctrader KONFIGURIMI – rinovo tokenin e cTrader\n"
     "/ctrader reset – kthehu te variablat e Railway\n"
     "/revoke_all – shkëput Gemini\n"
-    "/rules – pragjet aktive"
+    "/rules – si vendos validatori"
 )
 
 
 def daily_report(data: dict[str, Any]) -> str:
     return (
         f"📊 <b>RAPORTI {esc(data['date'])}</b>\n"
-        f"Setup: {data['n']} · Refuzuar {data['rej']} · Anuluar {data['inv']} · "
-        f"Skaduar {data['exp']} · Humbur {data['mis']}\n"
-        f"HYR: {data['ent']} → TP1+ {data['win']} · SL {data['loss']} · pa rezultat {data['open']}\n"
-        f"Filtri: {data['saves']} humbje të shmangura · {data['missed_wins']} fitore të humbura\n"
-        f"Limit i verbër (krahasim): {data['blind_w']} fitore / {data['blind_l']} humbje"
+        f"Setup: {data['n']} · Hyrje: {data['ent']} · Anuluar para hyrjes: {data['cancel']}\n"
+        f"TP1+ {data['win']} · SL {data['loss']} · në pritje {data['open']}"
     )
 
 

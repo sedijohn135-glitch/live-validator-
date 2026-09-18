@@ -1,4 +1,4 @@
-"""Runtime glue: market polling, the engine tick, Telegram, news, the lease and `/health`.
+"""Runtime glue: market polling, the engine tick, Telegram, the lease and `/health`.
 
 All background tasks start once from the MCP server lifespan and only run while this instance holds
 the engine lease, so a deploy overlap can never send a message twice (architecture §5).
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import secrets
 import time
@@ -16,12 +15,12 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
-from app import news as news_module
 from app import telegram as tg
 from app.config import TIMEFRAMES, VERSION, Settings, load_settings
 from app.context import MarketContext
 from app.ctrader import AuthError, CTraderClient, DataError, Quote
-from app.engine import Engine
+from app.engine import OPEN_STATES, Engine
+from app.evidence import SCORE_MIN
 from app.market import CandleStore, build_snapshot, median_spread, session_levels
 from app.store import Store
 from app.timeutil import (
@@ -89,7 +88,6 @@ class Runtime:
         self.candles = CandleStore(close_grace_s=self.settings.profile.close_grace_s)
         self.quotes: dict[str, Quote] = {}
         self.spread_samples: dict[str, deque] = {s: deque(maxlen=1800) for s in self.settings.symbols}
-        self.news = news_module.NewsCache()
         self.ctrader = ctrader or CTraderClient(self.settings, self.store)
         self.telegram = telegram
         self.engine = Engine(self.settings, self.store, self.make_context, clock=self.clock)
@@ -156,13 +154,6 @@ class Runtime:
             data_ok=self.data_status == "ok",
         )
         ctx.levels = session_levels(self.candles, symbol, now)
-        ctx.news_feed_ok = self.news.ok or not self.settings.news_filter
-        ctx.news_blackout = (
-            self.news.blackout(now, profile.news_before_min, profile.news_after_min)
-            if self.settings.news_filter
-            else None
-        )
-        ctx.levels["post_holiday"] = self.news.post_holiday(now)
         return ctx
 
     @property
@@ -200,7 +191,7 @@ class Runtime:
             self._on_data_ok()
 
     def _symbols_to_watch(self) -> list[str]:
-        active = {row["symbol"] for row in self.store.setups_in_state(("ARMED", "IN_ZONE", "TRIGGERED"))}
+        active = {row["symbol"] for row in self.store.setups_in_state(OPEN_STATES)}
         recent = {s for s, (stamp, _payload) in self.last_snapshot.items() if self.clock() - stamp < 300}
         return [s for s in self.settings.symbols if s in active or s in recent]
 
@@ -238,12 +229,9 @@ class Runtime:
 
     def due_timeframes(self, symbol: str, now: float) -> tuple[str, ...]:
         """Timeframes whose newest bar should have closed by now."""
-        needed = {"M1", "M5", "M15", "H1", "D1"}
-        for row in self.store.setups_in_state(("ARMED", "IN_ZONE", "TRIGGERED"), symbol):
-            payload = json.loads(row["payload_json"])
-            needed.update({"M1", payload.get("ltf", "M5"), payload.get("pda_timeframe", "M5")})
-            if payload.get("invalidation_timeframe"):
-                needed.add(payload["invalidation_timeframe"])
+        # The universal validator always reads the same timeframes: M1 carries the evidence, the
+        # rest carry the structure the secure level is built from. No setup asks for more.
+        needed = set(REQUIRED_TIMEFRAMES)
         due = []
         grace = self.settings.profile.close_grace_s
         for timeframe in needed:
@@ -410,7 +398,6 @@ class Runtime:
     def time_block(self, symbol: str, now: float) -> dict[str, Any]:
         moment = from_epoch(now)
         ny = to_ny(moment)
-        profile = self.settings.profile
         return {
             "utc": to_utc(moment).strftime("%Y-%m-%d %H:%M"),
             "ny": ny.strftime("%Y-%m-%d %H:%M"),
@@ -420,16 +407,12 @@ class Runtime:
             "active_macro": active_macro(moment),
             "next_windows": [list(pair) for pair in next_windows(moment)],
             "lunch_block": in_lunch(moment),
-            "news_blackout": self.news.blackout(now, profile.news_before_min, profile.news_after_min)
-            if self.settings.news_filter
-            else None,
-            "upcoming_news": self.news.upcoming(now) if self.settings.news_filter else [],
         }
 
     # ---------------------------------------------------------------- health
     def health(self) -> dict[str, Any]:
         now = self.clock()
-        active = self.store.setups_in_state(("ARMED", "IN_ZONE", "TRIGGERED"))
+        active = self.store.setups_in_state(OPEN_STATES)
         return {
             "ok": True,
             "version": VERSION,
@@ -459,7 +442,6 @@ class Runtime:
             asyncio.create_task(self._engine_loop(), name="engine"),
             asyncio.create_task(self._sender_loop(), name="telegram-sender"),
             asyncio.create_task(self._commands_loop(), name="telegram-commands"),
-            asyncio.create_task(self._news_loop(), name="news"),
             asyncio.create_task(self._report_loop(), name="daily-report"),
         ]
 
@@ -567,12 +549,6 @@ class Runtime:
                 logger.exception("telegram command poller failed")
                 await asyncio.sleep(5.0)
 
-    async def _news_loop(self) -> None:
-        while True:
-            if self.settings.news_filter:
-                await news_module.fetch(self.settings.news_feed_url, self.news, self.clock())
-            await asyncio.sleep(news_module.REFRESH_S)
-
     async def _report_loop(self) -> None:
         while True:
             now = self.clock()
@@ -583,7 +559,6 @@ class Runtime:
             await asyncio.sleep(30)
 
     def send_daily_report(self) -> None:
-        self.engine.evaluate_pending_shadows()
         stats = self.engine.stats(1)
         date = to_ny(from_epoch(self.clock())).strftime("%Y-%m-%d")
         text = tg.daily_report({**stats, "date": date})
@@ -645,7 +620,6 @@ class Runtime:
             return "▶️ Monitorimi vazhdoi."
         if command == "stats":
             days = 30 if argument.strip() == "30" else 7
-            self.engine.evaluate_pending_shadows()
             stats = self.engine.stats(days)
             return tg.daily_report({**stats, "date": f"{days} ditë"})
         if command == "rules":
@@ -702,21 +676,25 @@ class Runtime:
         for row in overview["active"]:
             lines.append(
                 f"{tg.esc(row['setup_id'])} · {tg.esc(row['symbol'])} {tg.esc(row['direction'])} "
-                f"· {tg.esc(row['state'])} · skadon {tg.esc(row['expires_at_ny'] or '-')}"
+                f"· {tg.esc(row['state'])} · zona {tg.esc(row['zone'][0])}–{tg.esc(row['zone'][1])}"
             )
         return "\n".join(lines)
 
     def _rules_text(self) -> str:
-        profile = self.settings.profile
+        """`/rules` explains the only judgement the validator makes."""
         return (
-            f"<b>Pragjet ({tg.esc(profile.name)})</b>\n"
-            f"RR plan ≥ {profile.rr_min_plan:g} · RR në hyrje ≥ {profile.rr_min_trigger:g}\n"
-            f"Checklist ≥ {profile.checklist_min_pos} pozitive, ≤ {profile.checklist_max_neg} negative\n"
-            f"Score ≥ {profile.score_min}/7 · CE si nivel i fortë: {'po' if profile.ce_hard_fvg else 'jo'}\n"
-            f"Jetëgjatësia: {profile.max_setup_lifetime_h:g} orë · ndjekja pas hyrjes "
-            f"{profile.outcome_horizon_h:g} orë\n"
-            f"E premte (XAUUSD) deri {profile.friday_cutoff_ny} NY · lajme "
-            f"{profile.news_before_min}/{profile.news_after_min} min"
+            "<b>Si vendos validatori</b>\n"
+            "Asnjë setup nuk refuzohet. Koha, kill zone, premium/discount, modeli: nuk i shoh.\n"
+            f"Hyrje kur evidenca live ≥ {SCORE_MIN} pikë dhe ka së paku një sinjal kryesor:\n"
+            "• RECLAIM (2) – likuiditeti u mor dhe çmimi u kthye\n"
+            "• REJECTION (2) – bisht refuzimi ose qiri gëlltitës te zona\n"
+            "• SHIFT (2) – struktura mikro u thye\n"
+            "• MOMENTUM (1) – qiri me trup ≥ 0.9 ATR(M1)\n"
+            "• ABSORPTION (1) – 3 qirinj pa e humbur zonën\n"
+            "Pritje (jo refuzim): spread i lartë, thikë në rënie, të dhëna të vjetra.\n"
+            "Nëse çmimi ka ikur > 0.35R → LIMIT me hyrje të rillogaritur.\n"
+            "SL rillogaritet: ekstremi i konfirmimit ± max(1.5×ATR(M1), 2×spread, 2 tick).\n"
+            "Anulohet vetëm nga: SL para hyrjes, ose TP1 para hyrjes."
         )
 
     async def selftest(self) -> str:
@@ -785,8 +763,7 @@ class Runtime:
         else:
             lines.append("✅ /mcp mbrohet me fjalëkalimin e pronarit")
         lines.append(
-            ("✅" if self.news.ok else "⚠️") + " Filtri i lajmeve"
-            + ("" if self.settings.news_filter else " (i fikur)")
+            "✅ Validator universal: pa filtër kohe, pa refuzime"
         )
         lines.append(f"✅ Profili aktiv: {tg.esc(self.settings.profile.name)}")
         return "\n".join(lines)

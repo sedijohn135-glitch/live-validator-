@@ -1,11 +1,11 @@
-"""The market context injected into every rule: quotes, candles, ATR, tolerances and levels."""
+"""The market context the validator reads: quotes, candles, ATR, spread and session levels."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from app.config import Profile, SymbolSettings
-from app.market import Candle, CandleStore, median_spread, tolerance
+from app.market import Candle, CandleStore, median_spread
 
 
 @dataclass
@@ -21,8 +21,6 @@ class MarketContext:
     quote_synthetic: bool = False  # True when the price came from a candle close, not a tick
     spread_samples: list[float] = field(default_factory=list)
     levels: dict[str, float | None] = field(default_factory=dict)
-    news_blackout: str | None = None
-    news_feed_ok: bool = True
     paused: bool = False
     data_ok: bool = True
 
@@ -45,9 +43,6 @@ class MarketContext:
 
     def median_spread(self) -> float:
         return median_spread(self.spread_samples, self.sym.max_spread_abs)
-
-    def tol(self, timeframe: str) -> float:
-        return tolerance(self.atr(timeframe), self.median_spread(), self.sym.tick, self.profile.level_tol_atr)
 
     def candles(self, timeframe: str) -> list[Candle]:
         return self.store.series(self.symbol, timeframe)

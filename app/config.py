@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -27,37 +27,6 @@ TIMEFRAMES: dict[str, int] = {
     "W1": 604800,
 }
 
-ENTRY_MODELS = (
-    "ICT_2022",
-    "MARKET_ANCHOR",
-    "MODEL_2",
-    "TURTLE_SOUP",
-    "TURTLE_SOUP_DEFERRED",
-    "SILVER_BULLET",
-    "OTE",
-    "IOFED",
-    "LOW_RESISTANCE_RUN",
-    "SM_THREE_STAGE",
-    "VENOM",
-    "OR_FIRST_FVG",
-    "OR_PM_FIRST_FVG",
-    "LUNCH_MACRO_PM",
-)
-
-PDA_TYPES = (
-    "FVG",
-    "INVERSION_FVG",
-    "ORDER_BLOCK",
-    "BREAKER_BLOCK",
-    "MITIGATION_BLOCK",
-    "REJECTION_BLOCK",
-    "LIQUIDITY_VOID",
-    "SUSPENSION_BLOCK",
-    "BPR",
-    "OLD_HIGH_LOW",
-    "OTE_ZONE",
-)
-
 FVG_FAMILY = ("FVG", "LIQUIDITY_VOID", "BPR", "INVERSION_FVG")
 
 DEFAULT_SYMBOLS = ("XAUUSD", "BTCUSD")
@@ -69,7 +38,6 @@ class SymbolSettings:
 
     name: str
     max_spread_abs: float
-    sb_min_dol: float
     display_decimals: int
     price_band: tuple[float, float]
 
@@ -79,121 +47,31 @@ class SymbolSettings:
 
 
 SYMBOL_DEFAULTS: dict[str, SymbolSettings] = {
-    "XAUUSD": SymbolSettings("XAUUSD", 0.80, 10.0, 2, (1500.0, 14000.0)),
-    "BTCUSD": SymbolSettings("BTCUSD", 60.0, 300.0, 2, (25000.0, 240000.0)),
+    "XAUUSD": SymbolSettings("XAUUSD", 0.80, 2, (1500.0, 14000.0)),
+    "BTCUSD": SymbolSettings("BTCUSD", 60.0, 2, (25000.0, 240000.0)),
 }
 
 
 @dataclass(frozen=True)
 class Profile:
-    """Thresholds of validation-rules §13. Both profiles are tested."""
+    """Operational knobs only.
 
-    name: str
-    rr_min_plan: float
-    rr_min_trigger: float
-    checklist_min_pos: int
-    checklist_max_neg: int
-    score_min: int
-    ce_hard_fvg: bool
-    sl_min_atr_ltf: float
-    sl_max_atr_h1: float
-    spread_sl_mult: float
-    chase_max_risk_frac: float
-    cisd_lookback: int
-    mss_lookback: int
-    confirm_max_bars: int
-    disp_body_atr: float
-    disp_body_range: float
-    level_tol_atr: float
-    price_drift_atr_h1: float
-    price_drift_pct: float
-    level_range_atr_d1: float
-    max_setup_lifetime_h: float
-    liq_window_h: float
-    spread_spike_mult: float
-    news_before_min: int
-    news_after_min: int
-    ath_prox_atr_d1: float
-    ath_model_prox_atr: float
-    strict_pda_verify: bool
-    friday_cutoff_ny: str
-    enter_valid_min: int
-    late_trigger_max_s: int
-    outcome_horizon_h: float
+    The universal validator has no strategy thresholds to profile: how much evidence is enough lives
+    in `app/evidence.py`, and the price maths lives in `app/plan.py`. What is left here is how often
+    the service polls, how stale a price may be and how loud an outage is.
+    """
+
+    name: str = "UNIVERSAL"
     quote_poll_s: float = 2.0
     quote_max_age_s: float = 5.0
-    intake_quote_max_age_s: float = 180.0  # arming tolerates a stand-in price; T-07 never does
+    intake_quote_max_age_s: float = 180.0
     close_grace_s: float = 2.0
     data_outage_alert_s: float = 60.0
-    dedup_window_min: float = 15.0
-    model_2_lifetime_h: float = 24.0
 
 
-STRICT = Profile(
-    name="STRICT",
-    rr_min_plan=2.0,
-    rr_min_trigger=2.0,
-    checklist_min_pos=7,
-    checklist_max_neg=2,
-    score_min=3,
-    ce_hard_fvg=True,
-    sl_min_atr_ltf=0.5,
-    sl_max_atr_h1=3.0,
-    spread_sl_mult=3.0,
-    chase_max_risk_frac=0.35,
-    cisd_lookback=10,
-    mss_lookback=20,
-    confirm_max_bars=12,
-    disp_body_atr=0.8,
-    disp_body_range=0.55,
-    level_tol_atr=0.15,
-    price_drift_atr_h1=2.0,
-    price_drift_pct=0.25,
-    level_range_atr_d1=6.0,
-    max_setup_lifetime_h=8.0,
-    liq_window_h=24.0,
-    spread_spike_mult=2.5,
-    news_before_min=15,
-    news_after_min=15,
-    ath_prox_atr_d1=1.0,
-    ath_model_prox_atr=1.5,
-    strict_pda_verify=False,
-    friday_cutoff_ny="15:30",
-    enter_valid_min=5,
-    late_trigger_max_s=90,
-    outcome_horizon_h=24.0,
-)
+UNIVERSAL = Profile()
 
-BALANCED = replace(
-    STRICT,
-    name="BALANCED",
-    rr_min_trigger=1.5,
-    checklist_min_pos=6,
-    score_min=2,
-    ce_hard_fvg=False,
-    sl_min_atr_ltf=0.4,
-    sl_max_atr_h1=4.0,
-    spread_sl_mult=2.0,
-    chase_max_risk_frac=0.5,
-    confirm_max_bars=20,
-    disp_body_atr=0.6,
-    disp_body_range=0.5,
-    level_tol_atr=0.25,
-    price_drift_atr_h1=3.0,
-    price_drift_pct=0.4,
-    level_range_atr_d1=8.0,
-    max_setup_lifetime_h=12.0,
-    liq_window_h=36.0,
-    spread_spike_mult=3.0,
-    news_before_min=10,
-    news_after_min=10,
-    ath_prox_atr_d1=0.5,
-    ath_model_prox_atr=2.0,
-    friday_cutoff_ny="16:00",
-    late_trigger_max_s=120,
-)
-
-PROFILES = {"STRICT": STRICT, "BALANCED": BALANCED}
+PROFILES = {"UNIVERSAL": UNIVERSAL}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -256,7 +134,7 @@ def resolve_data_dir(environ: dict[str, str] | None = None) -> tuple[str, bool, 
 class Settings:
     """Parsed environment. Never raises; problems land in `warnings`."""
 
-    profile: Profile = STRICT
+    profile: Profile = UNIVERSAL
     symbols: tuple[str, ...] = DEFAULT_SYMBOLS
     symbol_settings: dict[str, SymbolSettings] = field(default_factory=dict)
     symbol_map: dict[str, str] = field(default_factory=dict)
@@ -269,8 +147,6 @@ class Settings:
     public_base_url: str = ""
     data_dir: str = "./data"
     on_volume: bool = False
-    news_filter: bool = True
-    news_feed_url: str = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
     btc_weekend_entries: bool = False
     oauth_static_client_id: str = ""
     oauth_static_client_secret: str = ""
@@ -291,7 +167,7 @@ class Settings:
 
     def symbol(self, name: str) -> SymbolSettings:
         return self.symbol_settings.get(name.upper()) or SYMBOL_DEFAULTS.get(
-            name.upper(), SymbolSettings(name.upper(), 1.0, 10.0, 2, (0.01, 10_000_000.0))
+            name.upper(), SymbolSettings(name.upper(), 1.0, 2, (0.01, 10_000_000.0))
         )
 
     def telegram_configured(self) -> bool:
@@ -311,11 +187,9 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
     try:
         warnings: list[str] = []
 
-        profile_name = _env("VALIDATOR_PROFILE", "STRICT").upper()
-        profile = PROFILES.get(profile_name)
-        if profile is None:
-            warnings.append(f"VALIDATOR_PROFILE '{profile_name}' nuk njihet — po përdoret STRICT")
-            profile = STRICT
+        profile = UNIVERSAL
+        if _env("VALIDATOR_PROFILE"):
+            warnings.append("VALIDATOR_PROFILE nuk përdoret më — validatori universal ka një profil të vetëm")
 
         raw_symbols = _env("SYMBOLS")
         symbols = tuple(s.strip().upper() for s in raw_symbols.split(",") if s.strip()) or DEFAULT_SYMBOLS
@@ -325,7 +199,7 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
         spread_override = _env_json("MAX_SPREAD", warnings)
         symbol_settings: dict[str, SymbolSettings] = {}
         for name in symbols:
-            base = SYMBOL_DEFAULTS.get(name, SymbolSettings(name, 1.0, 10.0, 2, (0.01, 10_000_000.0)))
+            base = SYMBOL_DEFAULTS.get(name, SymbolSettings(name, 1.0, 2, (0.01, 10_000_000.0)))
             decimals = base.display_decimals
             if name in digits_override:
                 try:
@@ -345,7 +219,7 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
                     max_spread = float(spread_override[name])
                 except (TypeError, ValueError):
                     warnings.append(f"MAX_SPREAD[{name}] i pavlefshëm — u injorua")
-            symbol_settings[name] = SymbolSettings(name, max_spread, base.sb_min_dol, decimals, band)
+            symbol_settings[name] = SymbolSettings(name, max_spread, decimals, band)
 
         symbol_map_raw = _env_json("SYMBOL_MAP", warnings)
         symbol_map = {str(k).upper(): str(v) for k, v in symbol_map_raw.items()}
@@ -394,8 +268,6 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
             public_base_url=base_url,
             data_dir=data_dir,
             on_volume=on_volume,
-            news_filter=_env_bool("NEWS_FILTER", True),
-            news_feed_url=_env("NEWS_FEED_URL", "https://nfs.faireconomy.media/ff_calendar_thisweek.json"),
             btc_weekend_entries=_env_bool("BTC_WEEKEND_ENTRIES", False),
             oauth_static_client_id=_env("OAUTH_STATIC_CLIENT_ID"),
             oauth_static_client_secret=_env("OAUTH_STATIC_CLIENT_SECRET"),

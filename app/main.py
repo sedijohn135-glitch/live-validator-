@@ -27,9 +27,10 @@ from app.store import Store
 logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = (
-    "Read-only IC Markets cTrader data plus a live ICT v11 setup validator. "
-    "Prices and times come only from market_snapshot; the validator, not the model, decides when to "
-    "enter, and the owner receives ENTER / DO NOT ENTER on Telegram."
+    "Read-only IC Markets cTrader data plus a universal live setup validator. "
+    "Any strategy, any prompt: send an entry (or zone), a stop and targets and nothing is rejected. "
+    "Prices and times come only from market_snapshot; the validator, not the model, decides the moment "
+    "of entry, and the owner receives ENTER NOW or a recomputed LIMIT on Telegram."
 )
 
 

@@ -14,12 +14,10 @@ from pathlib import Path
 import pytest
 
 from app import telegram as tg
-from app.engine import Engine
-from app.rules import t07_price
+from app.evidence import evaluate
 from app.setup_model import normalise
-from app.store import Store
 from tests.app_harness import make_runtime
-from tests.test_golden import BASE_SETUP, clean_long_scenario, settings_for, ts
+from tests.synth import Feed, Tape
 
 
 def free_port() -> int:
@@ -79,7 +77,7 @@ def test_server_binds_the_platform_port_and_answers_health(tmp_path):
         assert body is not None, "the server never answered /health"
         assert body["ok"] is True
         assert body["data"]["ctrader"] == "not_configured"
-        assert body["profile"] == "STRICT"
+        assert body["profile"] == "UNIVERSAL"
     finally:
         process.terminate()
         process.wait(timeout=15)
@@ -117,43 +115,50 @@ def test_ci_uses_a_frozen_lockfile():
 
 
 # ------------------------------------------------------------------------ E3
-def test_enter_is_refused_on_a_stale_quote(tmp_path):
+ZONE = {"entry_low": 4295.0, "entry_high": 4300.0, "stop_loss": 4288.0, "tp1": 4330.0}
+
+
+def confirmed_tape() -> tuple[Tape, float]:
+    tape = Tape(price=4306.0)
+    tape.drift(30, step=-0.25, span=0.5)
+    touch = tape.now
+    tape.sweep(low=4291.0, close=4298.0)
+    atr = tape.context().atr("M1") or 1.0
+    tape.push(4298.0, 4298.0 + 2 * atr, 4297.8, 4298.0 + 1.8 * atr)
+    return tape, touch
+
+
+def test_enter_is_held_on_a_stale_quote(tmp_path):
     """E3: a decision on an old price is a decision on a price that no longer exists."""
-    scenario = clean_long_scenario()
-    ctx = scenario.context_provider()("XAUUSD", ts("2026-09-16 08:10") + 2)
-    setup = normalise(dict(BASE_SETUP))
-    assert t07_price(setup, ctx).passed
-    ctx.quote_ts = ctx.now_ts - 30
-    result = t07_price(setup, ctx)
-    assert not result.passed and "vjetër" in result.text
+    tape, touch = confirmed_tape()
+    setup = normalise(ZONE)
+    assert evaluate(setup, tape.context(), touch).ready
+    stale = evaluate(setup, tape.context(quote_ts=tape.now - 45), touch)
+    assert not stale.ready
+    assert "DATA" in stale.holds
+    assert stale.confirmed, "stale data holds the entry; it never kills the setup"
 
 
 # ----------------------------------------------------------------------- E11
 def test_rounding_never_changes_a_decision(tmp_path):
     """E11: comparisons use full precision; rounding happens only in the message text."""
-    scenario = clean_long_scenario()
-    ctx = scenario.context_provider()("XAUUSD", ts("2026-09-16 08:10") + 2)
-    setup = normalise(dict(BASE_SETUP))
-    limit = t07_price(setup, ctx).data["chase_limit"]
-    ctx.ask = limit + 1e-9
-    assert not t07_price(setup, ctx).passed
-    ctx.ask = limit - 1e-9
-    assert t07_price(setup, ctx).passed
+    tape, touch = confirmed_tape()
+    setup = normalise(ZONE)
+    edge = setup.zone_high + 0.35 * setup.risk
+    assert not evaluate(setup, tape.context(bid=edge - 1e-9), touch).late
+    assert evaluate(setup, tape.context(bid=edge + 1e-9), touch).late
 
 
 # ----------------------------------------------------------------------- E10
-def test_btc_weekend_entries_are_off_by_default(tmp_path):
-    from datetime import datetime
-
-    from app.rules import t05_time
-    from app.timeutil import NY
-
-    scenario = clean_long_scenario()
-    ctx = scenario.context_provider()("BTCUSD", ts("2026-09-16 08:10"))
-    setup = normalise(dict(BASE_SETUP, symbol="BTCUSD"))
-    saturday = datetime(2026, 9, 19, 8, 10, tzinfo=NY)
-    assert not t05_time(setup, ctx, saturday, btc_weekend=False).passed
-    assert t05_time(setup, ctx, saturday, btc_weekend=True).data.get("window") is not None
+def test_no_clock_and_no_calendar_can_cancel_a_setup(tmp_path):
+    """E10: the universal validator has no session, no cutoff and no expiry (docs/VALIDATOR.md §1.3)."""
+    feed = Feed(tmp_path, start_ny="2026-09-18 15:00", price=4320.0)  # Friday afternoon
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    for _ in range(50):
+        feed.tape.drift(60, step=0.0, span=0.4)
+        feed.tick(price=4315.0)
+    assert feed.state(setup_id) == "WATCHING"
+    assert feed.outcome(setup_id) == ""
 
 
 # ------------------------------------------------------------------------ C8
@@ -163,22 +168,14 @@ def test_rate_limit_errors_are_data_errors_not_crashes(tmp_path):
     assert isinstance(classify(RuntimeError("429 Too Many Requests")), DataError)
 
 
-# ----------------------------------------------------------------------- E9
-def test_gold_setups_expire_at_the_friday_cutoff(tmp_path):
-    """E9: a gold position must not be left hanging over the weekend gap."""
-    scenario = clean_long_scenario(day="2026-09-18")  # Friday
-    store = Store(str(tmp_path / "v.db"))
-    clock = {"now": ts("2026-09-18 08:10")}
-    engine = Engine(
-        settings_for("STRICT"),
-        store,
-        scenario.context_provider(),
-        clock=lambda: clock["now"],
-        id_factory=lambda symbol, _now: f"{symbol[:3]}-0918-TEST",
-    )
-    result = engine.submit(dict(BASE_SETUP, pda_formed_at_ny="2026-09-18 07:35", price_at_analysis=5656.4))
-    assert result["status"] == "ARMED", result["reasons"]
-    assert result["computed"]["expires_at_ny"] <= "2026-09-18 15:30"
+# ------------------------------------------------------------------------ E9
+def test_a_setup_waits_instead_of_expiring_over_the_weekend(tmp_path):
+    """E9 rewritten: the owner asked for a validator, not a gatekeeper — only SL or TP1 close it."""
+    feed = Feed(tmp_path, start_ny="2026-09-18 16:00", price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    feed.tape.drift(600, step=0.0, span=0.4)  # ten hours of nothing
+    feed.tick(price=4316.0)
+    assert feed.state(setup_id) == "WATCHING"
 
 
 # ----------------------------------------------------------------------- D12
@@ -186,6 +183,6 @@ def test_a_broken_environment_never_crashes_the_process(tmp_path):
     from app.config import load_settings
 
     settings = load_settings({"VALIDATOR_PROFILE": "🙂", "SYMBOL_MAP": "{{{", "PRICE_DIGITS": "5"})
-    assert settings.profile.name == "STRICT"
+    assert settings.profile.name == "UNIVERSAL"
     assert settings.warnings
     assert json.dumps(settings.warnings)  # serialisable for /health

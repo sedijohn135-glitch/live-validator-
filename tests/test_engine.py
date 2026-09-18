@@ -1,203 +1,219 @@
-"""Engine behaviour beyond the golden scenarios: outcomes, cancel, status, stats and pause."""
+"""Whole lifecycles: register → touch → evidence → ENTER or LIMIT → secure → close."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
-from app.engine import fingerprint, new_setup_id
-from app.market import Candle
-from app.setup_model import normalise
-from tests.test_golden import BASE_SETUP, build, clean_long_scenario, keys, texts, ts
+from tests.synth import Feed
+
+ZONE = {"entry_low": 4295.0, "entry_high": 4300.0, "stop_loss": 4288.0, "tp1": 4330.0}
 
 
-@pytest.fixture()
-def triggered(tmp_path):
-    scenario = clean_long_scenario()
-    scenario.m5(5656.4, 5657.0, 5655.5, 5656.0, at="2026-09-16 08:10")
-    engine, store, clock = build(tmp_path, scenario)
-    result = engine.submit(dict(BASE_SETUP))
-    clock["now"] = ts("2026-09-16 08:10") + 2
-    engine.process_symbol("XAUUSD")
-    assert store.get_setup(result["setup_id"])["state"] == "TRIGGERED"
-    return engine, store, clock, result["setup_id"], scenario
+def quiet_approach(feed: Feed, target: float = 4299.0, bars: int = 30) -> None:
+    """Walk the tape down to the zone so the candles and the quote tell the same story."""
+    step = (target - feed.tape.price) / bars
+    feed.tape.drift(bars, step=step, span=0.5)
 
 
-def test_setup_id_shape():
-    generated = new_setup_id("XAUUSD", ts("2026-09-16 08:00"))
-    prefix, day, tail = generated.split("-")
-    assert prefix == "XAU" and day == "0916" and len(tail) == 4
+def plan_of(feed: Feed, setup_id: str) -> dict:
+    import json
+
+    return json.loads(feed.store.get_setup(setup_id)["computed_json"])["plan"]
 
 
-def test_fingerprint_rounds_to_display_decimals():
-    a = normalise(dict(BASE_SETUP))
-    b = normalise(dict(BASE_SETUP, entry_low=5651.0004))
-    assert fingerprint(a, 2) == fingerprint(b, 2)
+def confirm_long(feed: Feed) -> None:
+    """A sweep-and-reclaim plus a strong body: the balance the validator asks for."""
+    feed.tape.sweep(low=4291.0, close=4298.0)
+    atr = feed.tape.context().atr("M1") or 1.0
+    feed.tape.push(4298.0, 4298.0 + 2 * atr, 4297.8, 4298.0 + 1.8 * atr)
 
 
-def test_same_candle_tp_and_sl_counts_as_sl(triggered):
-    engine, store, clock, setup_id, scenario = triggered
-    row = store.get_setup(setup_id)
-    setup, computed = engine._decode(row)
-    ctx = scenario.context_provider()("XAUUSD", ts("2026-09-16 08:20"))
-    both = Candle(ts("2026-09-16 08:20"), 5656.0, 5680.0, 5640.0, 5650.0)
-    engine._track_outcome(setup_id, setup, computed, ctx, both, ts("2026-09-16 08:20"))
-    assert store.get_setup(setup_id)["outcome"] == "SL"
-    assert any("SL u godit" in t for t in texts(store))
-    assert not any("TP1 u arrit" in t for t in texts(store))
+def test_every_setup_is_registered_whatever_it_looks_like(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    for payload in (
+        {"entry": 4300.0, "stop_loss": 4290.0},
+        {"entry_low": 4305.0, "entry_high": 4295.0, "stop_loss": 4288.0},  # inverted zone
+        {"direction": "LONG", "entry": 4300.0, "stop_loss": 4310.0},  # contradictory direction
+        {"entry": 4300.0, "stop_loss": 4290.0, "tp1": 4280.0},  # target on the wrong side
+    ):
+        result = feed.submit(**payload)
+        assert result["status"] == "registered", payload
+    assert len([m for m in feed.messages() if "SETUP I REGJISTRUAR" in m]) == 4
 
 
-def test_tp_messages_are_emitted_once_per_target(triggered):
-    engine, store, clock, setup_id, scenario = triggered
-    row = store.get_setup(setup_id)
-    setup, computed = engine._decode(row)
-    ctx = scenario.context_provider()("XAUUSD", ts("2026-09-16 08:20"))
-    hit_tp1 = Candle(ts("2026-09-16 08:20"), 5656.0, 5676.0, 5656.0, 5675.0)
-    engine._track_outcome(setup_id, setup, computed, ctx, hit_tp1, ts("2026-09-16 08:20"))
-    engine._track_outcome(setup_id, setup, computed, ctx, hit_tp1, ts("2026-09-16 08:21"))
-    assert len([k for k in keys(store) if k.endswith(":TP1")]) == 1
+def test_a_payload_without_numbers_is_the_only_refusal(tmp_path):
+    feed = Feed(tmp_path)
+    assert feed.submit(note="blej arin")["status"] == "unusable"
 
 
-def test_cancel_rules(tmp_path):
-    engine, store, _clock = build(tmp_path, clean_long_scenario())
-    result = engine.submit(dict(BASE_SETUP))
-    setup_id = result["setup_id"]
-    assert engine.cancel("nope")["status"] == "NOT_FOUND"
-    assert engine.cancel(setup_id)["status"] == "CANCELLED"
-    assert store.get_setup(setup_id)["state"] == "CANCELLED"
-    assert engine.cancel(setup_id)["status"] == "ALREADY_CLOSED"
-    assert any("u anulua me kërkesë" in t for t in texts(store))
+def test_the_full_path_from_registration_to_enter_now(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+
+    feed.tick(price=4310.0)
+    assert feed.state(setup_id) == "WATCHING"
+
+    feed.tick(price=4298.0)  # first touch: never an entry
+    assert feed.state(setup_id) == "AT_ZONE"
+    assert "ZONA U PREK" in feed.last_message()
+
+    confirm_long(feed)
+    feed.tick(price=4301.0)
+    assert feed.state(setup_id) == "ENTERED"
+    text = feed.last_message()
+    assert "HYR TANI" in text
+    assert "Siguro fitimet" in text
+    assert "Evidenca:" in text
 
 
-def test_triggered_setup_cannot_be_cancelled(triggered):
-    engine, _store, _clock, setup_id, _scenario = triggered
-    assert engine.cancel(setup_id)["status"] == "CANNOT_CANCEL"
+def test_a_runaway_price_becomes_a_limit_not_a_chase(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4298.0)
+    confirm_long(feed)
+
+    feed.tick(price=4312.0)  # more than 0.35R beyond the zone
+    assert feed.state(setup_id) == "LIMIT"
+    assert "LIMIT" in feed.last_message()
+
+    feed.tape.drift(2, step=-1.0)
+    row = feed.store.get_setup(setup_id)
+    feed.tick(price=row["entry_price"] - 0.1)
+    assert feed.state(setup_id) == "ENTERED"
+    assert "LIMIT U MBUSH" in feed.last_message()
 
 
-def test_pause_turns_a_trigger_into_missed(tmp_path):
-    engine, store, clock = build(tmp_path, clean_long_scenario())
-    result = engine.submit(dict(BASE_SETUP))
-    engine.set_paused(True)
-    clock["now"] = ts("2026-09-16 08:10") + 2
-    engine.process_symbol("XAUUSD")
-    assert store.get_setup(result["setup_id"])["state"] == "MISSED"
-    assert any("pauzë aktive" in t for t in texts(store))
+def test_the_stop_before_the_entry_cancels_the_setup(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4287.0)
+    assert feed.state(setup_id) == "DONE"
+    assert feed.outcome(setup_id) == "CANCELLED_SL_FIRST"
+    assert "SL u prek para" in feed.last_message()
 
 
-def test_replacing_an_armed_setup_on_the_same_symbol(tmp_path):
-    engine, store, _clock = build(tmp_path, clean_long_scenario())
-    ids = iter(["XAU-0916-AAAA", "XAU-0916-BBBB"])
-    engine.id_factory = lambda symbol, _now: next(ids)
-    first = engine.submit(dict(BASE_SETUP))
-    second = engine.submit(dict(BASE_SETUP, tp1=5676.0))
-    assert second["status"] == "ARMED"
-    assert second["replaced_setup_id"] == first["setup_id"]
-    assert store.get_setup(first["setup_id"])["state"] == "REPLACED"
-    assert any("u zëvendësua" in t for t in texts(store))
+def test_tp1_before_the_entry_cancels_the_setup(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4331.0)
+    assert feed.outcome(setup_id) == "CANCELLED_TP1_FIRST"
+    assert "TP1 u prek para" in feed.last_message()
 
 
-def test_status_reports_distances_and_timeline(tmp_path):
-    engine, _store, _clock = build(tmp_path, clean_long_scenario())
-    result = engine.submit(dict(BASE_SETUP))
-    status = engine.status(result["setup_id"])
-    assert status["state"] == "ARMED"
-    assert status["live_bid"] == pytest.approx(5658.0)
-    assert status["distance_to_sl"] == pytest.approx(15.0)
-    assert status["timeline"][0]["type"] == "ARMED"
-    overview = engine.status()
-    assert len(overview["active"]) == 1 and overview["paused"] is False
+def test_nothing_else_ever_cancels_a_setup(tmp_path):
+    """No expiry, no session end, no news: an untouched setup simply waits."""
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    for _ in range(40):
+        feed.tape.drift(30, step=0.0, span=0.4)
+        feed.tick(price=4315.0)
+    assert feed.state(setup_id) == "WATCHING"
 
 
-def test_opposite_direction_trigger_is_blocked_while_one_is_open(triggered):
-    engine, store, clock, setup_id, scenario = triggered
-    setup, _computed = engine._decode(store.get_setup(setup_id))
-    assert engine._conflicting_trigger(normalise(dict(BASE_SETUP, direction="SHORT", htf_bias="BEARISH")))
-    assert not engine._conflicting_trigger(setup)
+def test_after_entry_the_owner_is_told_where_to_secure_the_profit(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4298.0)
+    confirm_long(feed)
+    feed.tick(price=4301.0)
+    built = plan_of(feed, setup_id)
+
+    feed.tape.drift(2, step=1.0)
+    feed.tick(price=built["secure_at"] + 0.05)
+    assert "SIGURO FITIMET" in feed.last_message()
+
+    feed.tape.drift(1, step=1.0)
+    feed.tick(price=built["entry"] + built["risk"] + 0.05)
+    assert "SL NË HYRJE" in feed.last_message()
 
 
-def test_stats_counts_saves_and_missed_wins(tmp_path):
-    engine, store, clock = build(tmp_path, clean_long_scenario())
-    result = engine.submit(dict(BASE_SETUP))
-    store.execute(
-        "UPDATE setups SET state = 'INVALIDATED', shadow_json = ? WHERE id = ?",
-        (json.dumps({"eligible": True, "result": "LOSS"}), result["setup_id"]),
-    )
-    stats = engine.stats(7)
-    assert stats["inv"] == 1 and stats["saves"] == 1 and stats["blind_l"] == 1
+def test_a_target_hit_is_reported_and_the_last_one_closes_the_setup(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(entry_low=4295.0, entry_high=4300.0, stop_loss=4288.0, tp1=4310.0)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4298.0)
+    confirm_long(feed)
+    feed.tick(price=4301.0)
+    assert feed.state(setup_id) == "ENTERED"
+
+    feed.tape.drift(2, step=1.0)
+    feed.tick(price=4311.0)
+    assert "TP1 U ARRIT" in feed.last_message()
+    assert feed.state(setup_id) == "DONE"
+    assert feed.outcome(setup_id) == "TP1"
 
 
-def test_unverified_pda_costs_a_score_point(tmp_path):
-    """P-3: a PDA the data cannot confirm must weigh against the setup at the trigger."""
-    scenario = clean_long_scenario()
-    engine, store, clock = build(tmp_path, scenario)
-    result = engine.submit(dict(BASE_SETUP, pda_type="BREAKER_BLOCK", entry_model="OTE"))
-    assert result["status"] == "ARMED", result["reasons"]
-    assert result["computed"]["pda_check"]["status"] == "UNVERIFIED"
+def test_the_stop_after_entry_closes_the_setup(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4298.0)
+    confirm_long(feed)
+    feed.tick(price=4301.0)
 
-    clock["now"] = ts("2026-09-16 08:10") + 2
-    engine.process_symbol("XAUUSD")
-    row = store.get_setup(result["setup_id"])
-    assert row["state"] == "TRIGGERED"
-    breakdown = json.loads(row["computed_json"])["score_breakdown"]
-    assert any("P-3" in item for item in breakdown)
-    assert "PDA e paverifikuar" in next(t for t in texts(store) if "HYR TANI" in t)
+    feed.tape.drift(2, step=-1.0)
+    feed.tick(price=plan_of(feed, setup_id)["stop"] - 0.5)
+    assert feed.outcome(setup_id) == "SL"
+    assert "SL U PREK" in feed.last_message()
 
 
-def test_a_stale_tap_holds_the_setup_instead_of_killing_it(tmp_path):
-    """T-04 only withholds the trigger; only §7's named cases end a setup as MISSED."""
-    scenario = clean_long_scenario()
-    # Replace the CISD bar with a quiet one: the tap stands, the confirmation never comes.
-    scenario.bars[-1] = Candle(scenario.bars[-1].t, 5653.2, 5653.6, 5653.0, 5653.3)
-    for _ in range(20):  # quiet bars well past CONFIRM_MAX_BARS
-        scenario.m5(5653.3, 5653.6, 5653.1, 5653.3)
-    scenario.quote("2026-09-16 08:15", 5653.3, 5653.5)
-    engine, store, clock = build(tmp_path, scenario)
-    result = engine.submit(dict(BASE_SETUP))
-    clock["now"] = ts("2026-09-16 08:56") + 2
-    engine.process_symbol("XAUUSD")
-    assert store.get_setup(result["setup_id"])["state"] in ("IN_ZONE", "TRIGGERED", "EXPIRED")
-    assert not any("KONFIRMIM I HUMBUR" in t for t in texts(store))
+def test_evidence_progress_is_reported_but_throttled(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    feed.submit(**ZONE)
+    quiet_approach(feed)
+    feed.tick(price=4298.0)
+    for _ in range(6):
+        feed.tape.push(4297.0, 4298.0, 4296.0, 4297.5)
+        feed.tick(price=4297.5)
+    notes = [m for m in feed.messages() if "EVIDENCA PO NDËRTOHET" in m]
+    assert 1 <= len(notes) <= 2, "progress must be visible but never spam"
 
 
-def test_settled_outcomes_stop_being_reprocessed(triggered):
-    engine, store, clock, setup_id, scenario = triggered
-    row = store.get_setup(setup_id)
-    setup, computed = engine._decode(row)
-    ctx = scenario.context_provider()("XAUUSD", ts("2026-09-16 08:20"))
-    engine._track_outcome(
-        setup_id, setup, computed, ctx, Candle(ts("2026-09-16 08:20"), 5656, 5656, 5640, 5641), ts("2026-09-16 08:20")
-    )
-    assert store.get_setup(setup_id)["outcome"] == "SL"
-    before = len(store.query("SELECT id FROM events WHERE setup_id = ?", (setup_id,)))
-    clock["now"] = ts("2026-09-16 08:30")
-    engine.process_symbol("XAUUSD")
-    assert len(store.query("SELECT id FROM events WHERE setup_id = ?", (setup_id,))) == before
+def test_a_paused_engine_still_watches_but_never_says_enter(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    feed.engine.set_paused(True)
+    quiet_approach(feed)
+    feed.tick(price=4298.0)
+    confirm_long(feed)
+    feed.tick(price=4301.0)
+    assert feed.state(setup_id) == "AT_ZONE"
+    assert not any("HYR TANI" in m for m in feed.messages())
 
 
-def test_gold_outcome_tracking_stops_at_the_friday_close(tmp_path):
-    engine, _store, _clock = build(tmp_path, clean_long_scenario())
-    setup = normalise(dict(BASE_SETUP))
-    triggered_at = ts("2026-09-18 10:00")  # Friday morning
-    horizon = engine._outcome_horizon(setup, triggered_at)
-    assert horizon == ts("2026-09-18 15:30")
+def test_status_and_manual_cancel(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    overview = feed.engine.status()
+    assert overview["active"][0]["setup_id"] == setup_id
+    detail = feed.engine.status(setup_id)
+    assert detail["zone"] == [4295.0, 4300.0]
+    assert feed.engine.cancel(setup_id)["status"] == "cancelled"
+    assert feed.outcome(setup_id) == "MANUAL"
+    assert feed.engine.cancel("NOPE")["status"] == "not_found"
 
 
-def test_model_2_outcome_tracking_stops_on_thursday(tmp_path):
-    engine, _store, _clock = build(tmp_path, clean_long_scenario())
-    setup = normalise(dict(BASE_SETUP, entry_model="MODEL_2", symbol="BTCUSD"))
-    triggered_at = ts("2026-09-15 07:00")  # Tuesday
-    assert engine._outcome_horizon(setup, triggered_at) == ts("2026-09-16 07:00")  # 24 h cap bites first
-    assert engine._outcome_horizon(setup, ts("2026-09-16 20:00")) == ts("2026-09-17 10:00")
+def test_stats_count_what_happened(tmp_path):
+    feed = Feed(tmp_path, price=4320.0)
+    feed.submit(**ZONE)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4287.0)
+    stats = feed.engine.stats(7)
+    assert stats["n"] == 2
+    assert stats["cancel"] == 2  # both setups shared the same zone and stop
+    assert feed.outcome(setup_id) == "CANCELLED_SL_FIRST"
 
 
-def test_pending_shadows_are_settled_in_bulk(tmp_path):
-    engine, store, clock = build(tmp_path, clean_long_scenario())
-    result = engine.submit(dict(BASE_SETUP))
-    store.execute("UPDATE setups SET state = 'EXPIRED' WHERE id = ?", (result["setup_id"],))
-    clock["now"] = ts("2026-09-17 09:00")
-    assert engine.evaluate_pending_shadows() == 1
-    assert engine.evaluate_pending_shadows() == 0
-    shadow = json.loads(store.get_setup(result["setup_id"])["shadow_json"])
-    assert shadow["result"] == "UNRESOLVED"  # the zone was tapped but nothing resolved in the window
-    assert engine.stats(7)["saves"] == 0
+@pytest.mark.parametrize("price", [4298.0, 4299.9])
+def test_the_touch_is_the_whole_zone_not_a_single_price(tmp_path, price):
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=price)
+    assert feed.state(setup_id) == "AT_ZONE"

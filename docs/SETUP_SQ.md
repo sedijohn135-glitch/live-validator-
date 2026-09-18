@@ -13,6 +13,7 @@ Koha: ~30–40 minuta. Emrat e butonave mund të ndryshojnë pak; kërko fjalën
 2. Railway gjen `Dockerfile` dhe fillon build-in. Mos krijo asnjë skedar konfigurimi.
 3. Hap shërbimin → **Settings**:
    - **Networking → Generate Domain** → kopjo adresën, p.sh. `https://live-validator-xxxx.up.railway.app`
+     dhe vendose te variabla `PUBLIC_BASE_URL`
    - **Healthcheck Path**: `/health`
    - Sigurohu që "Serverless / App Sleeping" është **OFF**.
    - Branch: `main`.
@@ -33,7 +34,7 @@ Në kanavacën e projektit: **+ Create / New → Volume** → lidhe me shërbimi
 | `TELEGRAM_CHAT_ID` | shiko hapin 5 |
 | `MCP_AUTH` | `open` — Gemini lidhet direkt nga URL-ja, pa faqe fjalëkalimi |
 | `OWNER_PASSWORD` | duhet vetëm nëse **nuk** e vendos `MCP_AUTH=open` |
-Opsionale: `VALIDATOR_PROFILE` = `STRICT` (parazgjedhje) ose `BALANCED`.
+Nuk ka më `VALIDATOR_PROFILE`: validatori universal ka një mënyrë të vetme pune.
 
 **Për `MCP_AUTH`:**
 - `open` — si një server MCP i thjeshtë: ngjit URL-në te Gemini dhe mbaron. Por kushdo që e di adresën
@@ -69,8 +70,10 @@ Botit: `/selftest` → të gjitha rreshtat ✅. Nëse diçka është ❌, lexo r
    `OAUTH_STATIC_REDIRECT_URIS` (adresa e ridrejtimit që tregon Gemini), prit redeploy, pastaj fut të
    njëjtat vlera te Gemini.
 
-## 9) Skill-i v11 në Gemini Spark
-Hap skill-in tënd v11 dhe ngjit në fund tekstin e plotë nga `docs/GEMINI_V11_ADDENDUM.md`. Ruaj.
+## 9) Skill-i në Gemini Spark
+Ngarko `spark-skill/live-validator/SKILL.md`, ose ngjit në skill-in tënd tekstin e plotë nga
+`docs/GEMINI.md`. Strategjia jote mbetet e pandryshuar — ndryshon vetëm nga vijnë të dhënat dhe
+kush vendos momentin e hyrjes.
 
 ## 10) Përdorimi i përditshëm
 - Te Gemini shkruan: `xauusd` ose `btcusd` (për siguri: `@live-validator xauusd`).

@@ -21,72 +21,95 @@ def runtime(tmp_path):
 
 
 # ------------------------------------------------------------------ templates
+ENTER = {
+    "symbol": "XAUUSD",
+    "direction": "LONG",
+    "setup_id": "XAU-0918-A1B2",
+    "entry": 4298.4,
+    "stop": 4291.2,
+    "risk": 7.2,
+    "targets": [4330.0, 4360.0],
+    "rr": [4.39, 8.56],
+    "secure_at": 4305.0,
+    "secure_why": "swing M5",
+    "signals": [("RECLAIM", "likuiditeti u mor & çmimi u kthye"), ("MOMENTUM", "trup i fortë")],
+    "score": 3,
+    "bars": 4,
+    "spread": 0.27,
+    "touch_ny": "09:41",
+}
+
+
 def test_dynamic_values_are_html_escaped():
     """Failure mode T1: an unescaped `<` breaks the whole message."""
-    text = tg.rejected_message("XAUUSD", "LONG", ["RR 1.2 < 1:2 & risky"], "XAU-0916-A1B2")
-    assert "&lt;" in text and "&amp;" in text
-    assert "<b>" in text  # our own markup survives
-
-
-def test_enter_message_shows_the_chase_limit_and_validity():
-    text = tg.enter_message(
+    text = tg.evidence_message(
         {
             "symbol": "XAUUSD",
             "direction": "LONG",
-            "entry": 5656.6,
-            "spread": 0.2,
-            "stop_loss": 5643.0,
-            "tp1": 5675.0,
-            "tp2": 5700.0,
-            "tp3": None,
-            "rr": 3.2,
-            "target_label": "TP2",
-            "chase_limit": 5657.18,
-            "valid_until": "2026-09-16 08:15",
-            "model": "ICT_2022",
-            "ltf": "M5",
-            "window": "NY_2022",
-            "checks": "SSL ✓ · CISD ✓",
-            "score": 5,
-            "id": "XAU-0916-A1B2",
-            "time": "2026-09-16 08:10",
-        },
-        2,
+            "setup_id": "XAU-0918-A1B2",
+            "signals": [("REJECTION", "spread < 0.3 & i qetë")],
+            "score": 2,
+            "holds": ["spread > 1.0"],
+        }
     )
-    assert "HYR TANI — BUY XAUUSD" in text
-    assert "Mos hyr nëse çmimi &gt; 5657.18" in text
-    assert "vlen deri 2026-09-16 08:15 NY" in text
-    assert "TP3" not in text
-    assert "Score: 5/7" in text
+    assert "&lt;" in text and "&amp;" in text and "&gt;" in text
+    assert "<b>" in text  # our own markup survives
 
 
-def test_short_enter_message_uses_the_bid_side():
-    text = tg.enter_message(
+def test_the_enter_message_carries_the_whole_decision():
+    text = tg.enter_message(ENTER, 2)
+    assert "HYR TANI" in text and "BLERJE XAUUSD" in text
+    assert "Hyrje: 4298.40" in text
+    assert "SL: 4291.20" in text
+    assert "TP1 4330.00 (4.4R)" in text and "TP2 4360.00 (8.6R)" in text
+    assert "Siguro fitimet te 4305.00 (swing M5)" in text
+    assert "RECLAIM + MOMENTUM (3 pikë)" in text
+    assert "XAU-0918-A1B2" in text
+
+
+def test_the_limit_message_says_how_far_the_price_ran():
+    text = tg.limit_message({**ENTER, "advance_r": 0.62, "entry_why": "50% i qiriut"}, 2)
+    assert "LIMIT" in text
+    assert "0.62R" in text
+    assert "50% i qiriut" in text
+
+
+def test_a_short_setup_reads_as_a_sell():
+    text = tg.registered_message(
         {
             "symbol": "BTCUSD",
             "direction": "SHORT",
-            "entry": 90000.0,
-            "spread": 20.0,
-            "stop_loss": 91000.0,
-            "tp1": 88000.0,
-            "tp2": None,
-            "tp3": None,
-            "rr": 2.0,
-            "target_label": "TP1",
-            "chase_limit": 89500.0,
-            "valid_until": "2026-09-16 08:15",
-            "model": "OTE",
-            "ltf": "M5",
-            "window": "NY_KZ",
-            "checks": "BSL ✓",
-            "score": 3,
-            "id": "BTC-0916-A1B2",
-            "time": "2026-09-16 08:10",
+            "setup_id": "BTC-0918-Z9Z9",
+            "zone_low": 76000.0,
+            "zone_high": 76200.0,
+            "stop": 76800.0,
+            "risk": 700.0,
+            "targets": [74000.0],
+            "rr": [3.0],
+            "price": 75500.0,
+            "distance": 500.0,
+            "notes": ["objektivat mungonin — u llogaritën te 1R, 2R, 3R"],
         },
         2,
     )
-    assert "🔴" in text and "SELL BTCUSD" in text
-    assert "(bid)" in text and "Mos hyr nëse çmimi &lt;" in text
+    assert "SHITJE BTCUSD" in text
+    assert "Zona: 76000.00 – 76200.00" in text
+    assert "ℹ️" in text
+
+
+def test_the_two_cancellations_read_differently():
+    base = {"symbol": "XAUUSD", "direction": "LONG", "setup_id": "X", "price": 4287.0}
+    assert "SL u prek para" in tg.cancel_message({**base, "reason": "SL_FIRST"}, 2)
+    assert "TP1 u prek para" in tg.cancel_message({**base, "reason": "TP1_FIRST"}, 2)
+
+
+def test_the_protection_messages_exist_for_every_step():
+    base = {"symbol": "XAUUSD", "direction": "LONG", "setup_id": "X", "price": 4310.0}
+    assert "SIGURO FITIMET" in tg.secure_message({**base, "secure_at": 4305.0, "secure_why": "PDH", "secure_r": 0.9}, 2)
+    assert "SL NË HYRJE" in tg.breakeven_message(base, 2)
+    assert "SHENJA KTHIMI" in tg.reversal_message(base, 2)
+    assert "TP2 U ARRIT" in tg.tp_message({**base, "n": 2, "r_multiple": 2.1}, 2)
+    assert "SL U PREK" in tg.sl_message(base, 2)
 
 
 def test_long_messages_split_on_line_boundaries():
@@ -165,7 +188,7 @@ def test_owner_commands_answer(runtime):
     assert "/selftest" in texts[0]
     assert "Gjendja" in texts[1]
     assert "S'ka setup aktive" in texts[2]
-    assert "Pragjet (STRICT)" in texts[3]
+    assert "Si vendos validatori" in texts[3]
 
 
 def test_pause_and_resume(runtime):

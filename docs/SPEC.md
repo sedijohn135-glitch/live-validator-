@@ -3,38 +3,37 @@
 One Railway service that is three things at once:
 
 1. an OAuth-protected remote MCP server giving Gemini Spark read-only IC Markets cTrader data,
-2. a 24/7 monitor that validates or invalidates ICT v11 setups with deterministic rules,
-3. a Telegram notifier that sends `HYR TANI` (enter) or `MOS HYR` (do not enter) to the owner.
+2. a 24/7 **universal validator** that watches any submitted setup and decides the moment of entry,
+3. a Telegram notifier that sends `HYR TANI`, `LIMIT`, `SIGURO FITIMET` and the closing messages.
 
-Success is measured by two things only: an ENTER tends to work out, and a block would have lost.
+The validator judges live evidence, never the idea. It rejects nothing: see `docs/VALIDATOR.md` for
+the contract, the signals and the maths.
 
 ## Where the requirements live
 
 | Topic | Source |
 |---|---|
-| Mission, phases, definition of done | `.claude/skills/live-validator-builder/SKILL.md` |
-| Process layout, stack, persistence, routes | `references/architecture.md` |
-| Every rule, threshold and golden scenario | `references/validation-rules.md` |
-| cTrader adapter, allowlist, decoding | `references/ctrader-remote-mcp.md` |
-| MCP tools, OAuth, schema limits | `references/mcp-oauth.md` |
-| Albanian message templates | `references/telegram-messages-sq.md` |
-| Owner docs | `references/deploy-railway-sq.md`, `references/gemini-v11-addendum.md` |
-| Risks to tick before shipping | `references/failure-modes.md` |
+| The validator's contract, signals, recalculation and protection rules | `docs/VALIDATOR.md` |
+| What the owner sees, in Albanian | `docs/RULES_SQ.md` |
+| How any prompt submits a setup | `docs/GEMINI.md` |
+| Install and operate | `docs/SETUP_SQ.md` |
+| Risks ticked before shipping | `docs/FAILURE_MODES.md` |
+| Original build brief (historical, v11) | `.claude/skills/live-validator-builder/SKILL.md` |
 
 ## Module map
 
 | Module | Responsibility |
 |---|---|
-| `app/config.py` | env parsing, STRICT/BALANCED profiles, per-symbol settings |
-| `app/timeutil.py` | New York time, kill zones, macros, market hours, closed-candle rule |
+| `app/config.py` | env parsing, operational profile, per-symbol settings |
+| `app/timeutil.py` | New York time, session windows for the snapshot, market hours, closed-candle rule |
 | `app/market.py` | candles, ATR, swings, FVGs, session levels, snapshot builder |
-| `app/setup_model.py` | the `setup_submit` payload and its normalisation |
-| `app/context.py` | the market context injected into every rule |
-| `app/rules.py` | G-01…G-18 intake, L-01…L-04 invalidation, T-02…T-08 triggers, score |
-| `app/engine.py` | state machine, model overrides, outcomes, shadow tracking, stats |
+| `app/setup_model.py` | the permissive setup: repairs, never rejections |
+| `app/context.py` | the market context the validator reads |
+| `app/evidence.py` | the live evidence signals, the score and the holds |
+| `app/plan.py` | entry, stop, targets and the profit-securing level |
+| `app/engine.py` | the state machine and every Telegram transition |
 | `app/ctrader.py` | cTrader Remote MCP client, read-only allowlist, decoding, rate limits |
 | `app/telegram.py` | Albanian templates, outbox sender |
-| `app/news.py` | optional USD news blackout (fail-open) |
 | `app/oauth.py` | SQLite OAuth 2.1 provider and the login page |
 | `app/tools.py` | the six MCP tools with flat schemas |
 | `app/runtime.py` | polling, engine tick, background tasks, `/health`, `/selftest`, commands |
@@ -67,6 +66,7 @@ Success is measured by two things only: an ENTER tends to work out, and a block 
 | D23 | `/selftest` and `candles_held` report H4 too, but `usable` still gates only on M1/M5/M15/H1/D1 | H4 feeds the G-15 liquidity swings and the H4 FVGs, so its bar count belongs in the health report; it is not in the per-tick refresh set because no live trigger reads it, and gating on it would let a thin H4 history refuse an otherwise complete snapshot |
 | D24 | the failure reason is printed whenever the feed is not `ok`, in the snapshot data block, in `/health` and in `/status` | the owner cannot read Railway logs; a `down` status with no reason left both the owner and the model guessing, and the snapshot hid the reason entirely whenever cached bars kept it usable |
 | D25 | a dead streamable-HTTP session ("Session not found", 404, "re-initialize") counts as transient, and the engine forces a reconnect every 120 s while the feed is down | the session id died overnight and was reused for hours: every call failed and the owner got the same outage message every hour from 01:44 to 04:45 with no recovery until a restart |
+| D26 | v2: the validator became universal — every strategy rule (time, kill zone, premium/discount, liquidity, bias, checklist, expiry, news) was deleted, together with `app/rules.py`, `app/news.py` and the v11 payload | the owner's instruction: "validues live" only. A validator that refuses setups is a gatekeeper, and the refusals were rejecting ideas it had no business judging. What replaced them: `app/evidence.py` (live confirmation at the zone), `app/plan.py` (recomputed stop, targets and the profit-securing level) and exactly two cancellations. Rules and thresholds researched online and cited in `docs/VALIDATOR.md` |
 | D14 | Every tool is advertised with `readOnlyHint=True`, including `setup_submit` and `setup_cancel`, instead of the write annotations `mcp-oauth.md` §5 prescribes | Gemini asks for a confirmation tap on anything it reads as a write, which turns every analysis into two steps; the owner asked for the flow to run without it. Neither tool moves money — they arm or stop the monitoring of one setup on the owner's own service — and the ENTER message on Telegram, not the tool call, is what he acts on |
 | D13 | `MCP_AUTH=open` serves `/mcp` with no authentication at all, and the OAuth routes are then not registered | the owner asked for the behaviour his previous server had: Gemini connects straight from the URL with no login page. The trade-off (anyone with the address can call `setup_submit` and trigger a false ENTER on his phone) was put to him and he chose it. The default stays `oauth`, the mode is visible in `/health`, `/status` and `/selftest`, and the switch is one Railway variable to remove |
 | D12 | Shadow outcomes are evaluated from the in-memory M1 history (≈ 25 hours) when `/stats` or the daily report runs, not with dedicated chunked `get_trendbars` backfills | the horizon is 24 hours, so the retained history already covers it, and the alternative spends historical rate limit on a statistic |
@@ -76,12 +76,14 @@ Success is measured by two things only: an ENTER tends to work out, and a block 
 | Gate | Tests |
 |---|---|
 | Primitives | `tests/test_timeutil.py`, `tests/test_market.py`, `tests/test_config.py`, `tests/test_store.py` |
-| Intake rules | `tests/test_rules.py` (a passing and a failing case per rule) |
-| Engine | `tests/test_golden.py` (all 17 golden scenarios), `tests/test_engine.py` |
+| The no-rejection contract | `tests/test_setup_model.py` |
+| Live evidence | `tests/test_evidence.py` (each signal, the balance, every hold) |
+| Prices and protection | `tests/test_plan.py` |
+| Lifecycles | `tests/test_engine.py` (register → touch → ENTER/LIMIT → secure → close) |
 | Telegram | `tests/test_telegram.py` |
 | cTrader | `tests/test_ctrader.py` against `tests/fake_ctrader.py` (which also exposes trading tools) |
-| MCP tools | `tests/test_tools.py` (schema lint, snapshot size, submit → ENTER) |
+| MCP tools | `tests/test_tools.py` (schema lint, snapshot size, submit is never refused) |
 | OAuth and HTTP | `tests/test_app.py` |
-| News | `tests/test_news.py` |
-| Docs | `tests/test_docs.py` (addendum names match the registered tools; no Railway config files) |
+| Live feed incidents | `tests/test_feed.py` |
+| Docs | `tests/test_docs.py` (the guides name only real tools and parameters; no Railway config files) |
 | Failure modes | `tests/test_failure_modes.py`, ticked row by row in `docs/FAILURE_MODES.md` |

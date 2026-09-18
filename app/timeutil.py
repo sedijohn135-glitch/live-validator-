@@ -69,7 +69,6 @@ WINDOWS: dict[str, Window] = {
 # Windows advertised in the snapshot: EQUITIES_OR is for indices only and never applies here.
 SNAPSHOT_WINDOWS = tuple(n for n in WINDOWS if n not in ("EQUITIES_OR", "LUNCH"))
 
-SB_WINDOWS = ("LONDON_SB", "AM_SB", "PM_SB")
 
 MACROS: tuple[str, ...] = (
     "02:33",
@@ -87,19 +86,6 @@ MACROS: tuple[str, ...] = (
     "16:00",
 )
 MACRO_HALF_WIDTH_MIN = 10
-
-MODEL_WINDOW_NAMES: dict[str, tuple[str, ...]] = {
-    "ICT_2022": ("NY_2022",),
-    "MARKET_ANCHOR": ("LONDON_KZ", "NY_KZ", "LONDON_CLOSE", "PM_SESSION"),
-    "OTE": ("LONDON_KZ", "NY_KZ", "LONDON_CLOSE", "PM_SESSION"),
-    "IOFED": ("LONDON_KZ", "NY_KZ", "LONDON_CLOSE", "PM_SESSION"),
-    "LOW_RESISTANCE_RUN": ("LONDON_KZ", "NY_KZ", "LONDON_CLOSE", "PM_SESSION"),
-    "VENOM": ("LONDON_KZ", "NY_KZ", "LONDON_CLOSE", "PM_SESSION"),
-    "TURTLE_SOUP": ("LONDON_KZ", "NY_KZ"),
-    "TURTLE_SOUP_DEFERRED": ("LONDON_KZ", "NY_KZ"),
-    "SM_THREE_STAGE": ("LONDON_KZ", "NY_KZ", "PM_SESSION"),
-}
-
 
 def to_ny(moment: datetime) -> datetime:
     if moment.tzinfo is None:
@@ -226,63 +212,6 @@ def next_weekday_at(moment: datetime, weekday: int, minutes: int) -> datetime:
     if candidate <= ny:
         candidate = ny_datetime(ny.date() + timedelta(days=ahead + 7), minutes)
     return candidate
-
-
-def model_windows(model: str, formed_at: datetime | None, balanced: bool) -> list[Window]:
-    """Windows where ENTER may be sent for `model` (validation-rules §4)."""
-    if model in MODEL_WINDOW_NAMES:
-        return [WINDOWS[n] for n in MODEL_WINDOW_NAMES[model]]
-    if model == "SILVER_BULLET":
-        if formed_at is None:
-            return []
-        return [WINDOWS[n] for n in SB_WINDOWS if WINDOWS[n].contains(formed_at)]
-    if model == "MODEL_2":
-        weekdays = (1, 2, 3) if balanced else (1,)
-        return [_w("MODEL_2", "06:00", "10:00", weekdays)]
-    if model == "OR_FIRST_FVG":
-        if formed_at is None:
-            return []
-        if WINDOWS["LONDON_OR"].contains(formed_at):
-            return [_w("OR_LONDON", "02:00", "05:00")]
-        if WINDOWS["NY_OR"].contains(formed_at):
-            return [_w("OR_NY", "07:30", "10:00")]
-        return []
-    if model == "OR_PM_FIRST_FVG":
-        if formed_at is None or not WINDOWS["PM_OR"].contains(formed_at):
-            return []
-        return [_w("OR_PM", "14:00", "16:00")]
-    if model == "LUNCH_MACRO_PM":
-        # v11 §3.10 Step 5 puts the Last Hour (15:00-16:00) inside this flow: the PM inversion
-        # arrays are worked until the cash close, so the window runs 13:30-16:00 in both profiles.
-        return [_w("LUNCH_MACRO_PM", "13:30", "16:00")]
-    return []
-
-
-def in_model_windows(model: str, formed_at: datetime | None, balanced: bool, moment: datetime) -> str | None:
-    for window in model_windows(model, formed_at, balanced):
-        if window.contains(moment):
-            return window.name
-    return None
-
-
-def next_window_end(windows: list[Window], moment: datetime, horizon: datetime) -> datetime | None:
-    """The end of the last window that starts before `horizon` (validation-rules G-18)."""
-    ny = to_ny(moment)
-    best: datetime | None = None
-    day = ny.date() - timedelta(days=1)
-    limit = to_ny(horizon).date() + timedelta(days=1)
-    while day <= limit:
-        for window in windows:
-            if window.weekdays is not None and day.weekday() not in window.weekdays:
-                continue
-            start = window.start_on(day)
-            end = window.end_on(day)
-            if end <= ny:
-                continue
-            if start < horizon and (best is None or end > best):
-                best = end
-        day += timedelta(days=1)
-    return best
 
 
 def candle_is_closed(open_ts: float, tf_seconds: int, now_ts: float, grace_s: float) -> bool:

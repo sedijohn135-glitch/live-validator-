@@ -17,7 +17,9 @@ RREGULLA TË FORTA:
 Çdo herë që fillon punë, vepro sipas këtyre rregullave.
 
 ## Harta e skill-eve (zgjidhi vetë, automatikisht)
-- Burimi i kërkesave: `.claude/skills/live-validator-builder/` (SKILL.md → references/ vetëm kur duhen).
+- Burimi i kërkesave: `docs/VALIDATOR.md` (kontrata e validatorit universal, v2).
+  `.claude/skills/live-validator-builder/` mbetet vetëm për infrastrukturën (Railway, cTrader, OAuth, Telegram);
+  rregullat e v11 aty janë histori — validatori nuk refuzon më asnjë setup.
 - Detyrë e re: `agent-skills:spec` (i shkurtër) → `agent-skills:plan` → `agent-skills:build`.
 - Rregullat e validimit / engine: `agent-skills:test-driven-development` + `agent-skills:doubt-driven-development`.
 - MCP SDK, cTrader, Railway, Telegram API: `agent-skills:source-driven-development` (lexo burimin, mos hamendëso).
