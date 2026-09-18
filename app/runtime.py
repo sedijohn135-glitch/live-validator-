@@ -540,6 +540,9 @@ class Runtime:
         """
         if self.ctrader.symbols or now - self._last_discovery < DISCOVERY_RETRY_S:
             return
+        if self.ctrader.credentials is None and self.ctrader.load_credentials() is None:
+            self.data_status = "not_configured"  # missing credentials are not a broken feed
+            return
         self._last_discovery = now
         try:
             await self.ctrader.discover()

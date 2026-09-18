@@ -315,3 +315,15 @@ def test_discovery_is_retried_with_a_fresh_connection_and_never_timed_out(tmp_pa
     now += 60  # resolved symbols are never rediscovered
     asyncio.run(runtime._ensure_discovered(now))
     assert calls["discover"] == 2
+
+
+def test_a_service_without_credentials_is_not_a_broken_feed(tmp_path):
+    """`not_configured` must survive the discovery retry: there is nothing to reconnect to."""
+    import asyncio
+
+    runtime, _fake, _tg = make_runtime(tmp_path, CTRADER_MCP_TOKEN="", CTRADER_MCP_URL="")
+    runtime.ctrader.symbols = {}
+    runtime.ctrader.credentials = None
+    asyncio.run(runtime._ensure_discovered(runtime.clock()))
+    assert runtime.data_status == "not_configured"
+    assert runtime.health()["data"]["ctrader"] == "not_configured"
