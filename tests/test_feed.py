@@ -344,3 +344,21 @@ def test_the_snapshot_says_when_the_engine_is_not_running(tmp_path):
 
     runtime.last_tick_at = now - 600
     assert runtime.data_block("XAUUSD", True, now)["engine_ticking"] is False
+
+
+def test_status_shows_a_stuck_outbox(tmp_path):
+    """No alert arriving used to look exactly like no alert being due."""
+    runtime, now = runtime_with_candles(tmp_path)
+    assert "Mesazhe në pritje" not in runtime._status_text()
+
+    runtime.store.queue_message("stuck", "42", "text", now - 900)
+    pending = runtime.store.pending_messages(1)[0]
+    runtime.store.mark_failed(pending["id"], "Bad Request: chat not found")
+
+    health = runtime.health()
+    assert health["outbox"]["pending"] == 1
+    assert health["outbox"]["attempts"] == 1
+    text = runtime._status_text()
+    assert "Mesazhe në pritje: 1" in text
+    assert "900s" in text
+    assert "chat not found" in text

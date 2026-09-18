@@ -247,6 +247,23 @@ class Store:
     def mark_sent(self, outbox_id: int, now: float | None = None) -> None:
         self.execute("UPDATE outbox SET sent_at = ? WHERE id = ?", (time.time() if now is None else now, outbox_id))
 
+    def outbox_health(self) -> dict[str, Any]:
+        """Pending count, the age of the oldest and why it last failed — a stuck queue is silent."""
+        row = self.query_one(
+            "SELECT COUNT(*) AS pending, MIN(created_at) AS oldest, MAX(attempts) AS attempts "
+            "FROM outbox WHERE sent_at IS NULL"
+        )
+        error = self.query_one(
+            "SELECT last_error FROM outbox WHERE sent_at IS NULL AND last_error IS NOT NULL "
+            "ORDER BY attempts DESC LIMIT 1"
+        )
+        return {
+            "pending": row["pending"] if row else 0,
+            "oldest": row["oldest"] if row else None,
+            "attempts": (row["attempts"] if row else 0) or 0,
+            "last_error": (error["last_error"] if error else "") or "",
+        }
+
     def mark_failed(self, outbox_id: int, error: str) -> None:
         self.execute(
             "UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?",

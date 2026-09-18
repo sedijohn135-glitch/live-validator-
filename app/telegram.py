@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -331,13 +332,13 @@ class TelegramClient:
             raise TelegramError(str(data.get("description") or "telegram error"), retry_after)
         return data.get("result") or {}
 
-    async def send_message(self, chat_id: str, text: str) -> dict[str, Any]:
+    async def send_message(self, chat_id: str, text: str, parse_mode: str | None = "HTML") -> dict[str, Any]:
         result: dict[str, Any] = {}
         for part in split_message(text):
-            result = await self._call(
-                "sendMessage",
-                {"chat_id": chat_id, "text": part, "parse_mode": "HTML", "disable_web_page_preview": True},
-            )
+            payload: dict[str, Any] = {"chat_id": chat_id, "text": part, "disable_web_page_preview": True}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            result = await self._call("sendMessage", payload)
         return result
 
     async def delete_message(self, chat_id: str, message_id: int) -> None:
@@ -353,8 +354,23 @@ class TelegramClient:
         return result if isinstance(result, list) else []
 
 
+MAX_SEND_ATTEMPTS = 5
+TAG_PATTERN = re.compile(r"<[^>]+>")
+
+
+def strip_html(text: str) -> str:
+    """The same message without markup, for the retry after Telegram refuses to parse it."""
+    return html.unescape(TAG_PATTERN.sub("", text))
+
+
 class OutboxSender:
-    """Drains the outbox at-least-once, honouring 429 `retry_after` (failure mode T3)."""
+    """Drains the outbox at-least-once, honouring 429 `retry_after` (failure mode T3).
+
+    One message must never block the ones behind it. A message the API refuses (malformed markup,
+    an entity it cannot parse) is retried once as plain text and then dropped after
+    `MAX_SEND_ATTEMPTS`; the queue keeps moving either way. Before this, a single rejected message
+    stopped every later alert for good — including ENTER and the cancellations.
+    """
 
     def __init__(self, store, client: TelegramClient, chat_id: str, sleep=asyncio.sleep) -> None:
         self.store = store
@@ -371,13 +387,35 @@ class OutboxSender:
             try:
                 await self.client.send_message(chat_id, row["text"])
             except TelegramError as exc:
-                self.store.mark_failed(row["id"], exc.message)
-                if exc.retry_after:
+                if exc.retry_after:  # rate limited: the whole queue waits, in order
+                    self.store.mark_failed(row["id"], exc.message)
                     await self._sleep(min(float(exc.retry_after), 60.0))
-                return sent
-            except Exception as exc:  # network trouble: retry on the next pass
-                self.store.mark_failed(row["id"], repr(exc))
+                    return sent
+                if await self._send_plain(chat_id, row):
+                    sent += 1
+                    continue
+                self._failed(row, exc.message)
+                continue  # the API refused this message, not the connection: keep going
+            except Exception as exc:  # network trouble: the next pass retries everything
+                self._failed(row, repr(exc))
                 return sent
             self.store.mark_sent(row["id"])
             sent += 1
         return sent
+
+    async def _send_plain(self, chat_id: str, row) -> bool:
+        try:
+            await self.client.send_message(chat_id, strip_html(row["text"]), parse_mode=None)
+        except Exception:  # noqa: BLE001 - the plain retry is a bonus, never a new failure mode
+            return False
+        self.store.mark_sent(row["id"])
+        logger.warning("outbox message %s was sent without markup", row["dedupe_key"])
+        return True
+
+    def _failed(self, row, error: str) -> None:
+        self.store.mark_failed(row["id"], error)
+        if row["attempts"] + 1 >= MAX_SEND_ATTEMPTS:
+            self.store.mark_sent(row["id"])
+            logger.error(
+                "dropping outbox message %s after %s attempts: %s", row["dedupe_key"], MAX_SEND_ATTEMPTS, error
+            )

@@ -53,6 +53,17 @@ ENGINE_STALE_S = 60.0  # beyond this the loop is not running, whatever the feed 
 DISCOVERY_RETRY_S = 20.0  # symbols must resolve before anything can be polled; keep trying
 
 
+def _outbox_lines(outbox: dict[str, Any], now: float) -> list[str]:
+    """A queue that stopped moving used to be invisible: no alert arrived and nothing said why."""
+    if not outbox["pending"]:
+        return []
+    age = int(now - outbox["oldest"]) if outbox["oldest"] else 0
+    line = f"Mesazhe në pritje: {outbox['pending']} · më i vjetri {age}s"
+    if outbox["last_error"]:
+        line += f" · {tg.esc(outbox['last_error'][:80])}"
+    return [line]
+
+
 def _engine_line(engine: dict[str, Any]) -> str:
     """The owner cannot read Railway logs: whether the engine is ticking must be one line away."""
     age = engine["last_tick_age_s"]
@@ -465,6 +476,7 @@ class Runtime:
                 "error": self.engine_error,
             },
             "telegram": "ok" if self.settings.telegram_configured() else "not_configured",
+            "outbox": self.store.outbox_health(),
             "mcp_auth": "open" if self.settings.mcp_open else "oauth",
             "volume": "ok" if self.settings.on_volume else "missing",
             "active_setups": len(active),
@@ -726,6 +738,7 @@ class Runtime:
 
     def _status_text(self) -> str:
         health = self.health()
+        now = self.clock()
         lines = [
             "<b>Gjendja</b>",
             f"cTrader: {tg.esc(health['data']['ctrader'])}"
@@ -736,6 +749,7 @@ class Runtime:
             *([f"Arsyeja: {tg.esc(health['data']['detail'])}"] if health["data"]["detail"] else []),
             f"Setup aktive: {health['active_setups']}",
             _engine_line(health["engine"]),
+            *_outbox_lines(health["outbox"], now),
             f"Telegram: {tg.esc(health['telegram'])} · Volume: {tg.esc(health['volume'])}",
             f"Profili: {tg.esc(self.settings.profile.name)} · Uptime: {health['uptime_s']} s",
             f"Pauzë: {'po' if health['paused'] else 'jo'}",

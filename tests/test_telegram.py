@@ -230,3 +230,102 @@ def test_secrets_never_reach_the_logs(caplog):
         logger.info("calling with Authorization: Bearer %s", secret)
     assert secret not in caplog.text
     assert "***" in caplog.text
+
+
+# --------------------------------------------- one bad message must never block the queue
+def outbox_rows(store):
+    return store.query("SELECT dedupe_key, sent_at, attempts, last_error FROM outbox ORDER BY id")
+
+
+def test_a_refused_message_never_blocks_the_ones_behind_it(tmp_path):
+    """The incident: a cancellation never reached the owner because an older message was stuck.
+
+    `drain_once` used to return on the first failure, so one message the API refuses stopped every
+    later alert — including ENTER and the two cancellations — for good.
+    """
+    store = Store(str(tmp_path / "v.db"))
+    for key in ("first:bad", "second:good", "third:good"):
+        store.queue_message(key, "42", f"text for {key}", 1.0)
+
+    calls = []
+
+    async def call(method, payload):
+        calls.append(payload["text"])
+        if "first:bad" in payload["text"]:
+            raise tg.TelegramError("Bad Request: can't parse entities")
+        return {"message_id": len(calls)}
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42")
+    assert asyncio.run(sender.drain_once()) == 2, "the two good messages must go out"
+    rows = {row["dedupe_key"]: row for row in outbox_rows(store)}
+    assert rows["second:good"]["sent_at"] is not None
+    assert rows["third:good"]["sent_at"] is not None
+    assert rows["first:bad"]["sent_at"] is None, "the refused one waits its turn to be retried"
+    assert rows["first:bad"]["attempts"] == 1
+
+
+def test_a_message_the_api_cannot_parse_is_retried_without_markup(tmp_path):
+    store = Store(str(tmp_path / "v.db"))
+    store.queue_message("broken", "42", "<b>unclosed &amp; <i>markup", 1.0)
+    seen = []
+
+    async def call(method, payload):
+        seen.append(payload)
+        if payload.get("parse_mode") == "HTML":
+            raise tg.TelegramError("Bad Request: can't parse entities")
+        return {"message_id": 1}
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42")
+    assert asyncio.run(sender.drain_once()) == 1
+    assert seen[-1].get("parse_mode") is None
+    assert seen[-1]["text"] == "unclosed & markup"
+    assert outbox_rows(store)[0]["sent_at"] is not None
+
+
+def test_a_message_that_always_fails_is_dropped_instead_of_poisoning_the_queue(tmp_path):
+    store = Store(str(tmp_path / "v.db"))
+    store.queue_message("cursed", "42", "text", 1.0)
+
+    async def call(method, payload):
+        raise tg.TelegramError("Bad Request: chat not found")
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42")
+    for _ in range(tg.MAX_SEND_ATTEMPTS):
+        asyncio.run(sender.drain_once())
+    row = outbox_rows(store)[0]
+    assert row["sent_at"] is not None, "a permanently refused message must leave the queue"
+    assert row["attempts"] == tg.MAX_SEND_ATTEMPTS
+    assert "chat not found" in row["last_error"]
+
+
+def test_a_network_error_stops_the_pass_and_keeps_everything_queued(tmp_path):
+    """A dead connection is not a bad message: the whole queue waits, in order."""
+    store = Store(str(tmp_path / "v.db"))
+    for key in ("a", "b"):
+        store.queue_message(key, "42", key, 1.0)
+
+    async def call(method, payload):
+        raise OSError("connection reset")
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42")
+    assert asyncio.run(sender.drain_once()) == 0
+    assert all(row["sent_at"] is None for row in outbox_rows(store))
+
+
+def test_rate_limits_still_pause_the_whole_queue(tmp_path):
+    store = Store(str(tmp_path / "v.db"))
+    for key in ("a", "b"):
+        store.queue_message(key, "42", key, 1.0)
+    slept = []
+
+    async def call(method, payload):
+        raise tg.TelegramError("Too Many Requests", retry_after=7)
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42", sleep=lambda s: _record(slept, s))
+    assert asyncio.run(sender.drain_once()) == 0
+    assert slept == [7.0]
+    assert all(row["sent_at"] is None for row in outbox_rows(store))
+
+
+async def _record(bucket, seconds):
+    bucket.append(seconds)
