@@ -49,8 +49,7 @@ LEASE_HEARTBEAT_S = 10.0
 IDLE_HEARTBEAT_S = 300.0
 OUTAGE_PAUSE_S = 20.0
 RECONNECT_EVERY_S = 120.0  # while the feed is down, rebuild the link this often
-DISCOVERY_RETRY_S = 60.0  # symbols must resolve before anything can be polled; keep trying
-STARTUP_STEP_TIMEOUT_S = 45.0
+DISCOVERY_RETRY_S = 20.0  # symbols must resolve before anything can be polled; keep trying
 
 
 def _engine_line(engine: dict[str, Any]) -> str:
@@ -533,12 +532,24 @@ class Runtime:
             await asyncio.sleep(self.settings.profile.quote_poll_s)
 
     async def _ensure_discovered(self, now: float) -> None:
-        """Nothing can be polled until the symbols resolve, so keep retrying until they do."""
+        """Nothing can be polled until the symbols resolve, so keep retrying until they do.
+
+        Never put a timeout around `discover()`: cancelling a call inside the MCP client leaves the
+        session unusable, so every retry then fails too. A failed discovery gets a fresh connection
+        instead — that is the thing a retry can actually repair.
+        """
         if self.ctrader.symbols or now - self._last_discovery < DISCOVERY_RETRY_S:
             return
         self._last_discovery = now
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(self.ctrader.discover(), timeout=STARTUP_STEP_TIMEOUT_S)
+        try:
+            await self.ctrader.discover()
+            self._on_data_ok()
+        except AuthError as exc:
+            self._on_auth_error(exc)
+        except Exception as exc:  # noqa: BLE001 - the loop must survive a failed discovery
+            self._on_data_error(exc)
+            with contextlib.suppress(Exception):
+                await self.ctrader.reconnect()
 
     async def _startup(self) -> None:
         if not self.settings.on_volume and self.settings.warnings:
@@ -548,7 +559,7 @@ class Runtime:
             return
         self._last_discovery = self.clock()
         try:
-            info = await asyncio.wait_for(self.ctrader.discover(), timeout=STARTUP_STEP_TIMEOUT_S)
+            info = await self.ctrader.discover()
         except AuthError as exc:
             self._on_auth_error(exc)
             return
@@ -562,7 +573,7 @@ class Runtime:
             # Chunked history is dozens of calls; pay for it here, in the background, not inside the
             # first market_snapshot Gemini asks for.
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(self.ensure_history(symbol), timeout=STARTUP_STEP_TIMEOUT_S * 8)
+                await self.ensure_history(symbol)
 
     async def _heartbeat(self) -> None:
         if self.ctrader.credentials is None and self.ctrader.load_credentials() is None:

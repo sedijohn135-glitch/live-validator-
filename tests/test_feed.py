@@ -270,3 +270,48 @@ def test_a_tick_is_skipped_until_the_symbols_resolve(tmp_path):
     runtime.ctrader.symbols = {}
     asyncio.run(runtime.tick())
     assert runtime.ticks == 0
+
+
+def test_discovery_is_retried_with_a_fresh_connection_and_never_timed_out(tmp_path):
+    """A 45 s timeout around discover() cancelled it mid-call and left the session unusable.
+
+    Symbols then never resolved, so the whole feed stayed down: status `down`, no quotes, no candles.
+    A retry must rebuild the connection instead of cancelling the call.
+    """
+    import asyncio
+
+    runtime, _fake, _tg = make_runtime(tmp_path)
+    calls = {"discover": 0, "reconnect": 0}
+    now = ts("2026-09-18 14:30")
+    runtime.clock = lambda: now
+
+    async def slow_discover():
+        calls["discover"] += 1
+        await asyncio.sleep(0.05)  # longer than any timeout would have allowed
+        if calls["discover"] < 2:
+            raise RuntimeError("get_symbols failed")
+        runtime.ctrader.symbols = {"XAUUSD": object()}
+        return {"tools": (), "profile": "data", "version": "x"}
+
+    async def fake_reconnect():
+        calls["reconnect"] += 1
+
+    runtime.ctrader.symbols = {}
+    runtime.ctrader.discover = slow_discover
+    runtime.ctrader.reconnect = fake_reconnect
+
+    asyncio.run(runtime._ensure_discovered(now))
+    assert calls == {"discover": 1, "reconnect": 1}, "a failed discovery must get a fresh connection"
+
+    now += 1  # too soon: the retry is throttled
+    asyncio.run(runtime._ensure_discovered(now))
+    assert calls["discover"] == 1
+
+    now += 60
+    asyncio.run(runtime._ensure_discovered(now))
+    assert calls["discover"] == 2
+    assert runtime.ctrader.symbols, "the second attempt resolved the symbols"
+
+    now += 60  # resolved symbols are never rediscovered
+    asyncio.run(runtime._ensure_discovered(now))
+    assert calls["discover"] == 2
