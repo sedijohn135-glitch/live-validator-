@@ -205,3 +205,68 @@ def test_a_setup_left_by_the_previous_validator_never_breaks_the_answer(tmp_path
     assert runtime.engine.status()["active"] == []  # the old state is not one the engine watches
     assert runtime.engine.status("XAU-0917-OLD1")["legacy"] is True
     assert runtime._symbols_to_watch() == []
+
+
+# ------------------------------------------- the engine must never wait for the history
+def test_the_engine_ticks_even_while_the_history_is_still_loading(tmp_path):
+    """The incident: a setup sat inside its zone untouched because startup was still fetching bars.
+
+    Loading the deep history is dozens of chunked calls. It used to run inside the engine loop before
+    its first pass, so the validator was blind for as long as it took — and a hung call blinded it
+    for good. Startup now has its own task and the loop starts immediately.
+    """
+    import asyncio
+
+    runtime, _fake, _tg = make_runtime(tmp_path)
+    started = asyncio.Event()
+
+    async def never_finishes(*_args, **_kwargs):
+        started.set()
+        await asyncio.sleep(3600)
+
+    runtime.ctrader.discover = never_finishes
+
+    async def drive():
+        await runtime.run_forever()
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            names = {task.get_name() for task in runtime._tasks}
+            assert {"startup", "engine", "lease"} <= names
+            engine = next(task for task in runtime._tasks if task.get_name() == "engine")
+            await asyncio.sleep(0.1)
+            assert not engine.done(), "the engine loop must not be blocked by startup"
+        finally:
+            await runtime.stop(timeout=1.0)
+
+    asyncio.run(drive())
+
+
+def test_status_says_whether_the_engine_is_ticking(tmp_path):
+    runtime, now = runtime_with_candles(tmp_path)
+
+    health = runtime.health()
+    assert health["engine"]["ticks"] == 0
+    assert health["engine"]["last_tick_age_s"] is None
+    assert "Motori:" in runtime._status_text()
+
+    runtime.ticks, runtime.last_tick_at, runtime.has_lease = 42, now, True
+    assert "punon" in runtime._status_text()
+
+    runtime.last_tick_at = now - 600
+    text = runtime._status_text()
+    assert "600s më parë" in text
+
+    runtime.has_lease = False
+    runtime.engine_error = "RuntimeError: boom"
+    text = runtime._status_text()
+    assert "pa lease" in text and "boom" in text
+
+
+def test_a_tick_is_skipped_until_the_symbols_resolve(tmp_path):
+    """Polling before discovery only raises, and a raised tick used to look like a dead feed."""
+    import asyncio
+
+    runtime, _fake, _tg = make_runtime(tmp_path)
+    runtime.ctrader.symbols = {}
+    asyncio.run(runtime.tick())
+    assert runtime.ticks == 0

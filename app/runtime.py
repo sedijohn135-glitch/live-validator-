@@ -49,6 +49,24 @@ LEASE_HEARTBEAT_S = 10.0
 IDLE_HEARTBEAT_S = 300.0
 OUTAGE_PAUSE_S = 20.0
 RECONNECT_EVERY_S = 120.0  # while the feed is down, rebuild the link this often
+DISCOVERY_RETRY_S = 60.0  # symbols must resolve before anything can be polled; keep trying
+STARTUP_STEP_TIMEOUT_S = 45.0
+
+
+def _engine_line(engine: dict[str, Any]) -> str:
+    """The owner cannot read Railway logs: whether the engine is ticking must be one line away."""
+    age = engine["last_tick_age_s"]
+    if age is None:
+        state = "⏳ ende pa kaluar asnjë cikël" if not engine["startup_done"] else "❌ nuk po punon"
+    elif age <= 30:
+        state = f"✅ punon ({engine['ticks']} cikle)"
+    else:
+        state = f"❌ cikli i fundit {age}s më parë"
+    if not engine["has_lease"]:
+        state += " · pa lease"
+    if engine["error"]:
+        state += f" · {tg.esc(engine['error'])}"
+    return f"Motori: {state}"
 
 
 class SecretFilter(logging.Filter):
@@ -101,6 +119,11 @@ class Runtime:
         self._last_outage_alert = 0.0
         self._last_auth_alert = 0.0
         self._last_forced_reconnect = 0.0
+        self._last_discovery = 0.0
+        self.ticks = 0
+        self.engine_error = ""
+        self.last_tick_at = 0.0
+        self.startup_done = False
         self._telegram_offset = 0
         self._tasks: list[asyncio.Task] = []
         self._history_loaded: set[tuple[str, str]] = set()
@@ -301,6 +324,10 @@ class Runtime:
     async def tick(self) -> None:
         """One engine pass: quotes, due candles, then the state machine per symbol."""
         now = self.clock()
+        if not self.ctrader.symbols:
+            return  # discovery has not resolved the symbols yet: polling would only raise
+        self.ticks += 1
+        self.last_tick_at = now
         await self._heal_connection(now)
         await self.refresh_quotes()
         for symbol in self.settings.symbols:
@@ -425,6 +452,13 @@ class Runtime:
                 "account": self.ctrader.credentials.account if self.ctrader.credentials else "",
                 "detail": self.data_error if self.data_status != "ok" else "",
             },
+            "engine": {
+                "ticks": self.ticks,
+                "last_tick_age_s": int(now - self.last_tick_at) if self.last_tick_at else None,
+                "has_lease": self.has_lease,
+                "startup_done": self.startup_done,
+                "error": self.engine_error,
+            },
             "telegram": "ok" if self.settings.telegram_configured() else "not_configured",
             "mcp_auth": "open" if self.settings.mcp_open else "oauth",
             "volume": "ok" if self.settings.on_volume else "missing",
@@ -439,6 +473,7 @@ class Runtime:
         self.start_count += 1
         self._tasks = [
             asyncio.create_task(self._lease_loop(), name="lease"),
+            asyncio.create_task(self._startup_task(), name="startup"),
             asyncio.create_task(self._engine_loop(), name="engine"),
             asyncio.create_task(self._sender_loop(), name="telegram-sender"),
             asyncio.create_task(self._commands_loop(), name="telegram-commands"),
@@ -465,25 +500,45 @@ class Runtime:
             self.has_lease = self.store.acquire_lease("engine", self.holder, LEASE_TTL_S, self.clock())
             await asyncio.sleep(LEASE_HEARTBEAT_S)
 
-    async def _engine_loop(self) -> None:
+    async def _startup_task(self) -> None:
+        """Discovery and the history warm-up, in their own task.
+
+        They used to run inside the engine loop, before its first pass. Loading the deep history is
+        dozens of chunked calls, so the validator was blind for as long as that took — and if one
+        call hung, it stayed blind. Watching a zone must never wait for history.
+        """
         try:
             await self._startup()
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("startup failed")
+        finally:
+            self.startup_done = True
+
+    async def _engine_loop(self) -> None:
         last_idle = 0.0
         while True:
             try:
                 if self.has_lease:
+                    await self._ensure_discovered(self.clock())
                     if self._symbols_to_watch():
                         await self.tick()
                     elif self.clock() - last_idle > IDLE_HEARTBEAT_S:
                         last_idle = self.clock()
                         await self._heartbeat()
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - the loop must survive anything
+                self.engine_error = f"{type(exc).__name__}: {exc}"[:200]
                 logger.exception("engine tick failed")
             await asyncio.sleep(self.settings.profile.quote_poll_s)
+
+    async def _ensure_discovered(self, now: float) -> None:
+        """Nothing can be polled until the symbols resolve, so keep retrying until they do."""
+        if self.ctrader.symbols or now - self._last_discovery < DISCOVERY_RETRY_S:
+            return
+        self._last_discovery = now
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.ctrader.discover(), timeout=STARTUP_STEP_TIMEOUT_S)
 
     async def _startup(self) -> None:
         if not self.settings.on_volume and self.settings.warnings:
@@ -491,8 +546,9 @@ class Runtime:
         if self.ctrader.load_credentials() is None:
             self.data_status = "not_configured"
             return
+        self._last_discovery = self.clock()
         try:
-            info = await self.ctrader.discover()
+            info = await asyncio.wait_for(self.ctrader.discover(), timeout=STARTUP_STEP_TIMEOUT_S)
         except AuthError as exc:
             self._on_auth_error(exc)
             return
@@ -506,7 +562,7 @@ class Runtime:
             # Chunked history is dozens of calls; pay for it here, in the background, not inside the
             # first market_snapshot Gemini asks for.
             with contextlib.suppress(Exception):
-                await self.ensure_history(symbol)
+                await asyncio.wait_for(self.ensure_history(symbol), timeout=STARTUP_STEP_TIMEOUT_S * 8)
 
     async def _heartbeat(self) -> None:
         if self.ctrader.credentials is None and self.ctrader.load_credentials() is None:
@@ -659,6 +715,7 @@ class Runtime:
             else "Çmimi i fundit: -",
             *([f"Arsyeja: {tg.esc(health['data']['detail'])}"] if health["data"]["detail"] else []),
             f"Setup aktive: {health['active_setups']}",
+            _engine_line(health["engine"]),
             f"Telegram: {tg.esc(health['telegram'])} · Volume: {tg.esc(health['volume'])}",
             f"Profili: {tg.esc(self.settings.profile.name)} · Uptime: {health['uptime_s']} s",
             f"Pauzë: {'po' if health['paused'] else 'jo'}",
