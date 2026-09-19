@@ -329,3 +329,29 @@ def test_rate_limits_still_pause_the_whole_queue(tmp_path):
 
 async def _record(bucket, seconds):
     bucket.append(seconds)
+
+
+def test_the_card_warns_when_tp1_is_nearer_than_the_zone():
+    """BTC-0919-K5DE: the zone sat 133 above price while TP1 sat 48 below it."""
+    card = {
+        "symbol": "BTCUSD",
+        "direction": "SHORT",
+        "setup_id": "BTC-0919-K5DE",
+        "zone_low": 81263.08,
+        "zone_high": 81278.66,
+        "stop": 81390.0,
+        "risk": 119.13,
+        "targets": [81082.64],
+        "rr": [1.6],
+        "price": 81130.23,
+        "distance": 132.85,
+        "tp1_distance": 47.59,
+        "notes": [],
+    }
+    text = registered_message_text = tg.registered_message(card, 2)
+    assert "TP1 është më afër se zona" in text
+    assert "47.59" in text and "132.85" in text
+
+    safe = tg.registered_message({**card, "tp1_distance": 400.0}, 2)
+    assert "më afër se zona" not in safe
+    assert registered_message_text != safe

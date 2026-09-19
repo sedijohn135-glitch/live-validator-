@@ -102,9 +102,11 @@ class Engine:
         setup_id = self.id_factory(symbol, now)
         decimals = self._decimals(symbol)
         price = ctx.bid
-        distance = None
+        distance = tp1_distance = None
         if price is not None:
             distance = max(0.0, setup.zone_low - price if price < setup.zone_low else price - setup.zone_high)
+            if setup.tp1 is not None:
+                tp1_distance = abs(price - setup.tp1)
         computed = {
             "touch_ts": None,
             "progress_at": 0.0,
@@ -125,6 +127,7 @@ class Engine:
             "rr": planning.rr_for(setup.zone_mid, setup.stop_loss, setup.targets),
             "price": price,
             "distance": distance,
+            "tp1_distance": tp1_distance,
         }
         with self.store.transaction() as conn:
             self.store.insert_setup(

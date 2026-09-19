@@ -84,6 +84,17 @@ def _notes_lines(notes: list[str]) -> list[str]:
     return [f"ℹ️ {esc(note)}" for note in (notes or [])[:4]]
 
 
+def _race_warning(data: dict[str, Any], decimals: int) -> list[str]:
+    """TP1 nearer than the zone means the move can finish without you, and the setup then cancels."""
+    distance, to_tp1 = data.get("distance"), data.get("tp1_distance")
+    if distance is None or to_tp1 is None or to_tp1 >= distance:
+        return []
+    return [
+        f"⚠️ TP1 është më afër se zona ({num(to_tp1, decimals)} kundrejt {num(distance, decimals)}) — "
+        "lëvizja mund të mbarojë pa ty dhe setupi anulohet."
+    ]
+
+
 def registered_message(data: dict[str, Any], decimals: int) -> str:
     """Every accepted setup is acknowledged in full: nothing is ever silently refused."""
     lines = [
@@ -94,6 +105,7 @@ def registered_message(data: dict[str, Any], decimals: int) -> str:
         f"Çmimi tani: {num(data.get('price'), decimals)} · largësia nga zona: {num(data.get('distance'), decimals)}",
         "Po monitorohet. Vendimi vjen kur zona të preket.",
     ]
+    lines += _race_warning(data, decimals)
     lines += _notes_lines(data.get("notes", []))
     lines.append(f"ID: {esc(data['setup_id'])}")
     return "\n".join(lines)
