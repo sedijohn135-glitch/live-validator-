@@ -125,35 +125,13 @@ def test_snapshot_is_compact_and_new_york_timed(tmp_path):
     assert len(json.dumps(payload)) < 60_000  # failure mode G12
 
 
-def test_the_snapshot_carries_the_oscillator_so_the_model_never_computes_it(tmp_path):
-    """Gemini reads AO; it does not work it out.
-
-    The value is exactly determined by the candles, so the server produces it. A 34-period mean
-    reasoned out in prose is a 34-period mean reasoned out wrong, and the whole of strategy step 2
-    hangs off that number.
-    """
-    server, _runtime, tape, _tg = scenario_app(tmp_path)
-    payload = call(server, "market_snapshot", {"symbol": "XAUUSD"})
-    assert set(payload["ao"]) == {"M15", "M5"}, "the two timeframes the strategy reads"
-    for block in payload["ao"].values():
-        assert isinstance(block["values"], list)
-        assert block["divergence"] in (None, "SELL", "BUY")
-    assert len(json.dumps(payload)) < 60_000, "and it must still fit the budget"
-
-
 def test_validator_rules_describes_the_evidence_not_a_strategy(tmp_path):
     server, *_ = scenario_app(tmp_path)
     payload = call(server, "validator_rules", {})
     assert payload["schema"] == "rules/2"
-    entry = payload["entry"]
-    assert entry["required"] == "ZONE_BREAK", "step 3 is the gate"
-    assert entry["confirmations"] == ["ZONE_BREAK", "AO_DIV", "QUASIMODO"]
-    assert "never make one" in entry["rule"]
-    assert "never an entry signal" in entry["ao_div_means"]
-    assert entry["strength"] == {"1": "konfirmim", "2": "konfirmim i fortë", "3": "konfirmim shumë i fortë"}
-    assert entry["zone_break_timeframes"] == ["M1", "M5", "M15"], "the nearest zone can live on any"
-    assert "apart from the required break" in entry["substitution"]
-    assert len(payload["cancellations"]) == 3
+    assert payload["entry"]["score_min"] == 3
+    assert set(payload["entry"]["primary_signals"]) == {"RECLAIM", "REJECTION", "SHIFT"}
+    assert len(payload["cancellations"]) == 2
     assert "never rejects" in payload["principle"]
 
 

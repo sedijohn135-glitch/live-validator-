@@ -88,49 +88,6 @@ def atr14(candles: list[Candle], period: int = 14) -> float | None:
     return sum(ranges) / period
 
 
-AO_FAST, AO_SLOW = 5, 34  # Awesome Oscillator: SMA5 - SMA34 of the median price
-
-
-def awesome_oscillator(candles: list[Candle]) -> list[float]:
-    """AO over the median price, aligned to `candles[AO_SLOW - 1:]`.
-
-    Computed here rather than left to the model: it is exactly determined by the candles, and a
-    34-period mean worked out in prose is a 34-period mean worked out wrong.
-    """
-    if len(candles) < AO_SLOW:
-        return []
-    medians = [(bar.h + bar.l) / 2 for bar in candles]
-    out = []
-    for i in range(AO_SLOW - 1, len(medians)):
-        fast = sum(medians[i - AO_FAST + 1 : i + 1]) / AO_FAST
-        slow = sum(medians[i - AO_SLOW + 1 : i + 1]) / AO_SLOW
-        out.append(fast - slow)
-    return out
-
-
-def ao_divergence(candles: list[Candle], tolerance: float = 0.0) -> tuple[str, str]:
-    """Which way the oscillator disagrees with price, comparing the last two swings.
-
-    SELL: price made a higher high and AO did not follow. BUY: a lower low and AO did not follow.
-    Returns ("SELL" | "BUY" | "", a sentence naming the two prices).
-    """
-    values = awesome_oscillator(candles)
-    if len(values) < 6:
-        return "", ""
-    aligned = candles[len(candles) - len(values) :]
-    highs = swing_high_indices(aligned)
-    if len(highs) >= 2:
-        first, second = highs[-2], highs[-1]
-        if aligned[second].h >= aligned[first].h + tolerance and values[second] < values[first]:
-            return "SELL", f"maja {aligned[first].h:.2f} → {aligned[second].h:.2f}, AO më poshtë"
-    lows = swing_low_indices(aligned)
-    if len(lows) >= 2:
-        first, second = lows[-2], lows[-1]
-        if aligned[second].l <= aligned[first].l - tolerance and values[second] > values[first]:
-            return "BUY", f"fundi {aligned[first].l:.2f} → {aligned[second].l:.2f}, AO më lart"
-    return "", ""
-
-
 def swing_high_indices(candles: list[Candle]) -> list[int]:
     """Strict swing highs (v11 §1.2): `h[i] > h[i-1]` and `h[i] > h[i+1]`."""
     return [
@@ -372,29 +329,6 @@ SNAPSHOT_FVG_TFS = ("M5", "M15", "H1", "H4")
 SNAPSHOT_SWING_TFS = ("M15", "H1")
 
 
-SNAPSHOT_AO_TFS = ("M15", "M5")  # the two the strategy reads the divergence on
-AO_SNAPSHOT_VALUES = 10
-
-
-def snapshot_ao(store: CandleStore, symbol: str, timeframe: str, decimals: int) -> dict:
-    """The oscillator, already computed, plus the divergence it shows.
-
-    The model should never be asked to work out a 34-period mean in prose: the value is exactly
-    determined by the candles, so the server produces it and the analysis reads it.
-    """
-    candles = store.series(symbol, timeframe)
-    values = awesome_oscillator(candles)
-    if not values:
-        return {"values": [], "divergence": None, "detail": "", "bars": len(candles)}
-    side, detail = ao_divergence(candles)
-    return {
-        "values": [round(v, decimals) for v in values[-AO_SNAPSHOT_VALUES:]],
-        "last": round(values[-1], decimals),
-        "divergence": side or None,
-        "detail": detail,
-    }
-
-
 def snapshot_fvgs(store: CandleStore, symbol: str, timeframe: str, decimals: int, limit: int = 6) -> list[dict]:
     """The last `limit` arrays of a timeframe, dropping failed ones unless they inverted."""
     series = store.series(symbol, timeframe)
@@ -451,7 +385,6 @@ def build_snapshot(
         "quote": quote,
         "levels": {k: (round(v, decimals) if isinstance(v, (int, float)) else v) for k, v in levels.items()},
         "atr": {k: (round(v, decimals) if v else None) for k, v in atr.items()},
-        "ao": {tf: snapshot_ao(store, symbol, tf, decimals) for tf in SNAPSHOT_AO_TFS},
         "swings": {tf: swings_for_snapshot(store, symbol, tf) for tf in SNAPSHOT_SWING_TFS},
         "fvgs": {tf: snapshot_fvgs(store, symbol, tf, decimals) for tf in SNAPSHOT_FVG_TFS},
         "candles": {

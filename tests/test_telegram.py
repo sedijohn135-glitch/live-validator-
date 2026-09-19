@@ -32,15 +32,8 @@ ENTER = {
     "rr": [4.39, 8.56],
     "secure_at": 4305.0,
     "secure_why": "swing M5",
-    "signals": [
-        ("ZONE_BREAK", "demand M5 më i afërt u thye te 4295.00"),
-        ("RECLAIM", "likuiditeti u mor & çmimi u kthye"),
-        ("MOMENTUM", "trup i fortë"),
-    ],
-    "core": ["ZONE_BREAK"],
-    "strength": 1,
-    "strength_text": "konfirmim",
-    "score": 4,
+    "signals": [("RECLAIM", "likuiditeti u mor & çmimi u kthye"), ("MOMENTUM", "trup i fortë")],
+    "score": 3,
     "bars": 4,
     "spread": 0.27,
     "touch_ny": "09:41",
@@ -70,9 +63,7 @@ def test_the_enter_message_carries_the_whole_decision():
     assert "SL: 4291.20" in text
     assert "TP1 4330.00 (4.4R)" in text and "TP2 4360.00 (8.6R)" in text
     assert "Siguro fitimet te 4305.00 (swing M5)" in text
-    assert "Konfirmimi: <b>1/3</b> — konfirmim" in text
-    assert "ZONE_BREAK" in text
-    assert "Mbështetje: RECLAIM + MOMENTUM" in text
+    assert "RECLAIM + MOMENTUM (3 pikë)" in text
     assert "XAU-0918-A1B2" in text
 
 

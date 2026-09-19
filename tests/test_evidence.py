@@ -30,34 +30,18 @@ def impulse(tape: Tape) -> None:
     tape.push(o, o + 2 * atr, o - 0.1, o + 1.8 * atr)
 
 
-def break_supply(tape: Tape) -> None:
-    """A swing high, a pullback off it, then a close through it: the nearest supply gives way.
-
-    No entry exists without this, so a tape that is meant to confirm has to contain it.
-    """
-    atr = tape.context().atr("M1") or 1.0
-    o = tape.price
-    peak = o + 1.2 * atr
-    tape.push(o, peak, o - 0.1, o + 0.9 * atr)  # the swing high
-    dip = peak - 1.4 * atr
-    tape.push(o + 0.9 * atr, peak - 0.1 * atr, dip, dip + 0.1 * atr)  # the pullback
-    tape.push(dip + 0.1 * atr, peak + 0.8 * atr, dip, peak + 0.6 * atr)  # the close through it
-
-
 def verdict_for(tape: Tape, setup, touch_ts: float, **ctx_kwargs):
     return evaluate(setup, tape.context(**ctx_kwargs), touch_ts)
 
 
-def test_a_sweep_and_reclaim_is_supporting_evidence_not_a_confirmation():
-    """Real evidence, and on its own still not an entry: it is none of the owner's three."""
+def test_a_sweep_and_reclaim_is_a_primary_signal():
     tape = approach()
     touch = tape.now
     tape.drift(1, step=-1.0)
     tape.sweep(low=4291.0, close=4298.0)  # liquidity taken below the zone, price back inside
     verdict = verdict_for(tape, long_setup(), touch)
     assert "RECLAIM" in verdict.codes
-    assert verdict.core == [], "a reclaim is not one of the three"
-    assert not verdict.confirmed
+    assert verdict.has_primary
 
 
 def test_a_rejection_wick_is_a_primary_signal():
@@ -68,7 +52,7 @@ def test_a_rejection_wick_is_a_primary_signal():
     assert "REJECTION" in verdict.codes
 
 
-def test_the_nearest_supply_broken_is_a_confirmation():
+def test_a_micro_structure_shift_is_a_primary_signal():
     tape = approach()
     touch = tape.now
     tape.drift(3, step=-0.3)
@@ -76,7 +60,7 @@ def test_the_nearest_supply_broken_is_a_confirmation():
     tape.drift(2, step=-0.4)
     tape.push(4295.0, 4299.0, 4294.8, 4298.5)  # and is closed through
     verdict = verdict_for(tape, long_setup(), touch)
-    assert "ZONE_BREAK" in verdict.codes
+    assert "SHIFT" in verdict.codes
 
 
 def test_momentum_and_absorption_alone_never_confirm():
@@ -96,7 +80,6 @@ def test_one_primary_plus_one_weak_signal_confirms():
     touch = tape.now
     tape.sweep(low=4291.0, close=4298.0)
     impulse(tape)
-    break_supply(tape)
     verdict = verdict_for(tape, long_setup(), touch)
     assert verdict.score >= SCORE_MIN
     assert verdict.has_primary
@@ -121,7 +104,7 @@ def test_a_wide_spread_holds_the_entry_without_killing_the_setup():
     verdict = verdict_for(tape, long_setup(), touch, spread=9.0, median=0.2)
     assert "SPREAD" in verdict.holds
     assert not verdict.ready
-    assert verdict.codes, "the evidence is still evidence — only the entry waits"
+    assert verdict.confirmed, "the evidence is still evidence — only the entry waits"
 
 
 def test_stale_or_synthetic_prices_hold_the_entry():
@@ -234,7 +217,6 @@ def test_without_a_reaction_off_the_extreme_nothing_is_confirmed():
     touch = tape.now
     tape.sweep(low=4291.0, close=4298.0)
     impulse(tape)
-    break_supply(tape)
     ready = verdict_for(tape, long_setup(), touch)
     assert ready.ready
 
@@ -243,8 +225,7 @@ def test_without_a_reaction_off_the_extreme_nothing_is_confirmed():
     assert not stalled.ready
 
 
-def test_one_close_beyond_the_head_invalidates_the_zone():
-    """Step 6: një qiri që mbyllet jashtë zonës së QM e anulon setupin. One candle, not two."""
+def test_the_zone_breaking_is_not_the_same_as_the_zone_holding():
     from app.evidence import zone_failed
 
     tape = approach()
@@ -253,41 +234,9 @@ def test_one_close_beyond_the_head_invalidates_the_zone():
     assert not zone_failed(setup, tape.context(), touch)
 
     atr = tape.context().atr("M1") or 1.0
-    tape.push(setup.zone_low, setup.zone_low, setup.zone_low - 2 * atr, setup.zone_low - 1.5 * atr)
-    assert zone_failed(setup, tape.context(), touch), "one close beyond the head is the rule"
-
-
-def test_a_close_just_past_the_edge_is_not_a_break():
-    """The margin exists so a tick past the edge is not mistaken for a candle closing outside."""
-    from app.evidence import zone_failed
-
-    tape = approach()
-    touch = tape.now
-    setup = long_setup()
-    tape.push(setup.zone_low, setup.zone_low, setup.zone_low - 0.02, setup.zone_low - 0.01)
-    assert not zone_failed(setup, tape.context(), touch)
-
-
-def test_an_ao_divergence_alone_is_never_an_entry():
-    """Step 2 is explicit: divergjenca NUK është sinjal hyrjeje, por paralajmërim.
-
-    It raises the strength of an entry the break has already made. It never makes one.
-    """
-    tape = Tape(price=4300.0)
-    tape.drift(40, step=0.25, span=0.4)
-    touch = tape.now
-    tape.drift(10, step=-0.10, span=0.3)
-    _bar(tape, tape.price, tape.price + 1.2, tape.price - 0.2, tape.price + 0.4)
-    tape.drift(3, step=-0.25, span=0.2)
-    top = tape.price + 2.0
-    _bar(tape, tape.price, top, tape.price - 0.2, top - 0.4)
-    tape.drift(2, step=-0.2, span=0.2)
-    setup = normalise({"entry_low": top - 1.0, "entry_high": top + 1.0, "stop_loss": top + 5.0, "tp1": top - 20.0})
-    verdict = verdict_for(tape, setup, touch)
-    assert "AO_DIV" in verdict.codes, verdict.codes
-    assert "ZONE_BREAK" not in verdict.codes
-    assert "BREAK" in verdict.holds
-    assert not verdict.confirmed, "a warning is not an entry"
+    for _ in range(2):
+        tape.push(setup.zone_low, setup.zone_low, setup.zone_low - 2 * atr, setup.zone_low - 1.5 * atr)
+    assert zone_failed(setup, tape.context(), touch)
 
 
 # ------------------------------------------------ the setup that failed on 2026-09-18
@@ -337,14 +286,13 @@ def test_the_setup_that_failed_is_not_confirmed_where_it_sat():
     assert "REACTION" in verdict.holds
 
 
-def test_the_failed_setup_never_reaches_an_entry_at_all(tmp_path):
+def test_the_failed_setup_would_have_been_a_limit_not_a_market_fill(tmp_path):
     """The honest reading of that window, end to end through the engine.
 
-    At 14:10 the evidence was real — a 0.60 dip under the zone low is half an ATR at that
-    volatility, and the better half of the zone then held for three bars. Two things were still
-    wrong. The fill: 4392.20 is the expensive edge of a 4389.82-4392.35 demand zone. And the
-    structure: the nearest supply above was never broken in that window, so under the owner's rule
-    no entry existed to place at any price. The state machine stays at the zone, waiting.
+    At 14:10 the evidence was real: a 0.60 dip under the zone low is half an ATR at the volatility
+    of the moment, and the zone's better half then held for three bars. What was wrong was the fill —
+    4392.20 is the expensive edge of a 4389.82-4392.35 demand zone. The validator now waits for the
+    cheap half instead of paying the top of its own zone.
     """
     from tests.synth import Feed
 
@@ -367,12 +315,12 @@ def test_the_failed_setup_never_reaches_an_entry_at_all(tmp_path):
     feed.tick(price=4392.20)  # the top of the recovery
 
     row = feed.store.get_setup(setup_id)
-    assert row["state"] == "AT_ZONE", "none of the three confirmations appeared"
-    assert row["triggered_at"] is None, "nothing was entered at any price"
-    setup, computed = feed.engine.load_setup(setup_id)
-    verdict = evaluate(setup, feed.context(feed.tape.symbol, feed.tape.now), float(computed["touch_ts"]))
-    assert verdict.core == [], verdict.codes
-    assert not verdict.confirmed
+    assert row["state"] == "LIMIT", "a fill at the expensive edge of the zone is not an entry"
+    import json
+
+    plan = json.loads(row["computed_json"])["plan"]
+    assert plan["entry"] <= 4391.09, "the order belongs in the cheap half of the zone"
+    assert "gjysma e shtrenjtë" in feed.last_message()
 
 
 def test_the_same_window_holds_once_price_falls_back_to_the_edge():
@@ -381,98 +329,3 @@ def test_the_same_window_holds_once_price_falls_back_to_the_edge():
     verdict = verdict_for(tape, incident_setup(), touch, bid=4389.76)
     assert "REACTION" in verdict.holds
     assert not verdict.ready
-
-
-# ------------------------------------------------------- quasimodo, both directions
-def _bar(tape, o, h, low, c):
-    tape.push(o, h, low, c)
-
-
-def test_a_sell_quasimodo_is_a_primary_signal():
-    """Left shoulder, a higher head, the neckline broken, then price back at the shoulder.
-
-    The owner's diagram: the entry lives at the right shoulder, which sits at the left shoulder's
-    level. The head is what took the liquidity above it.
-    """
-    tape = Tape(price=4300.0)
-    tape.drift(40, step=0.02, span=0.4)
-    touch = tape.now
-    _bar(tape, 4300.0, 4305.0, 4299.5, 4304.0)  # left shoulder high 4305
-    _bar(tape, 4304.0, 4304.2, 4300.0, 4300.5)  # the neckline low 4300
-    _bar(tape, 4300.5, 4308.0, 4300.4, 4307.0)  # the head, higher than the shoulder
-    _bar(tape, 4307.0, 4307.2, 4302.0, 4302.5)
-    _bar(tape, 4302.5, 4302.6, 4297.0, 4297.5)  # closes through the neckline
-    _bar(tape, 4297.5, 4305.2, 4297.4, 4304.8)  # back at the shoulder: the right shoulder
-    setup = normalise({"entry_low": 4304.0, "entry_high": 4306.0, "stop_loss": 4310.0, "tp1": 4290.0})
-    assert "QUASIMODO" in verdict_for(tape, setup, touch).codes
-
-
-def test_a_buy_quasimodo_is_the_mirror():
-    tape = Tape(price=4300.0)
-    tape.drift(40, step=-0.02, span=0.4)
-    touch = tape.now
-    _bar(tape, 4300.0, 4300.5, 4295.0, 4296.0)  # left shoulder low 4295
-    _bar(tape, 4296.0, 4300.0, 4295.8, 4299.5)  # the neckline high 4300
-    _bar(tape, 4299.5, 4299.6, 4292.0, 4293.0)  # the head, lower than the shoulder
-    _bar(tape, 4293.0, 4298.0, 4292.8, 4297.5)
-    _bar(tape, 4297.5, 4303.0, 4297.4, 4302.5)  # closes through the neckline
-    _bar(tape, 4302.5, 4302.6, 4294.8, 4295.2)  # back at the shoulder
-    setup = normalise({"entry_low": 4294.0, "entry_high": 4296.0, "stop_loss": 4290.0, "tp1": 4310.0})
-    assert "QUASIMODO" in verdict_for(tape, setup, touch).codes
-
-
-def test_a_return_to_the_shoulder_before_the_neckline_breaks_is_not_a_quasimodo():
-    """The pattern is still forming. The break is what says who won, and it has not happened."""
-    tape = Tape(price=4300.0)
-    tape.drift(40, step=0.02, span=0.4)
-    touch = tape.now
-    _bar(tape, 4300.0, 4305.0, 4299.5, 4304.0)
-    _bar(tape, 4304.0, 4304.2, 4300.0, 4300.5)
-    _bar(tape, 4300.5, 4308.0, 4300.4, 4307.0)
-    _bar(tape, 4307.0, 4305.1, 4302.0, 4302.5)  # back at the shoulder, neckline still intact
-    setup = normalise({"entry_low": 4304.0, "entry_high": 4306.0, "stop_loss": 4310.0, "tp1": 4290.0})
-    assert "QUASIMODO" not in verdict_for(tape, setup, touch).codes
-
-
-def test_an_ao_divergence_is_a_primary_signal():
-    """Price made a higher high, the oscillator did not: the push had nothing behind it.
-
-    The owner's screenshot: XAUUSD M1, price pressing to a new high while AO rolled over. This is
-    the confirmation that arrives when the expected sweep-and-reclaim never does.
-    """
-    tape = Tape(price=4300.0)
-    tape.drift(40, step=0.25, span=0.4)  # a strong leg up: AO builds
-    touch = tape.now
-    tape.drift(10, step=-0.10, span=0.3)  # the leg fades: AO rolls over
-    _bar(tape, tape.price, tape.price + 1.2, tape.price - 0.2, tape.price + 0.4)  # swing high A
-    tape.drift(3, step=-0.25, span=0.2)
-    top = tape.price + 2.0
-    _bar(tape, tape.price, top, tape.price - 0.2, top - 0.4)  # swing high B, higher than A
-    tape.drift(2, step=-0.2, span=0.2)
-    setup = normalise({"entry_low": top - 1.0, "entry_high": top + 1.0, "stop_loss": top + 5.0, "tp1": top - 20.0})
-    verdict = verdict_for(tape, setup, touch)
-    assert "AO_DIV" in verdict.codes, verdict.codes
-
-
-def test_any_one_of_the_three_is_an_entry_and_each_extra_one_is_stronger():
-    """The owner's rule: 1 is an entry, 2 is stronger, 3 is as strong as this engine reads.
-
-    No confirmation is mandatory and none outranks another. A sweep and an impulse are real
-    evidence, but neither is one of the three, so on their own they are not an entry. The moment
-    the nearest supply gives way, it is.
-    """
-    tape = approach()
-    touch = tape.now
-    tape.sweep(low=4291.0, close=4298.0)
-    impulse(tape)
-    before = verdict_for(tape, long_setup(), touch)
-    assert before.codes, "the supporting evidence is there"
-    assert before.strength == 0
-    assert not before.ready, "and it is still not an entry"
-
-    break_supply(tape)
-    after = verdict_for(tape, long_setup(), touch)
-    assert after.core == ["ZONE_BREAK"]
-    assert after.strength == 1
-    assert after.strength_text == "konfirmim"
-    assert after.ready, "one of the three is enough"

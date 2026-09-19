@@ -10,37 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.market import AO_SLOW, Candle, awesome_oscillator, swing_high_indices, swing_low_indices
+from app.market import Candle, swing_high_indices, swing_low_indices
 from app.setup_model import Setup
 
-# Step 3 of the owner's strategy, and the only thing that makes an entry: before any entry, price
-# must break the nearest opposing zone — a demand area or recent support for a sell, a supply area
-# or recent resistance for a buy. "Nëse nuk ka thyerje zone, anuloje çdo setup. Instant Entry është
-# e ndaluar." Nothing substitutes for it.
-REQUIRED = "ZONE_BREAK"
-
-# The other two are read for strength, never for entry. An AO divergence is Step 2 — an early
-# warning to prepare for the setup, explicitly *not* an entry signal. A quasimodo forming live at
-# the zone says the pattern the analysis drew is still the pattern the market is trading.
-CORE = ("ZONE_BREAK", "AO_DIV", "QUASIMODO")
-STRENGTH_TEXT = {1: "konfirmim", 2: "konfirmim i fortë", 3: "konfirmim shumë i fortë"}
-
-PRIMARY = (REQUIRED,)
-WEIGHTS = {
-    "ZONE_BREAK": 2,
-    "AO_DIV": 1,
-    "QUASIMODO": 1,
-    "RECLAIM": 1,
-    "REJECTION": 1,
-    "MOMENTUM": 1,
-    "ABSORPTION": 1,
-}
-SCORE_MIN = 2  # the break itself; the score is reported, the break is what decides
-
-BREAK_TIMEFRAMES = ("M1", "M5", "M15")  # the nearest demand/supply can live on any of them
-BREAK_BARS = 60
-
-AO_MIN_BARS = AO_SLOW + 10
+PRIMARY = ("RECLAIM", "REJECTION", "SHIFT")
+WEIGHTS = {"RECLAIM": 2, "REJECTION": 2, "SHIFT": 2, "MOMENTUM": 1, "ABSORPTION": 1}
+SCORE_MIN = 3
 
 WINDOW_BARS = 30  # how far back from the touch evidence is read
 RECLAIM_BARS = 3
@@ -57,7 +32,7 @@ MIN_BREAK_ATR = 0.15  # a structure break must clear the swing by this much
 MIN_SWING_ATR = 0.50  # and the swing it breaks must itself be this tall
 MIN_REACTION_ATR = 0.50  # price must have left the extreme: nothing else proves a defence
 FAILURE_ATR = 0.50  # closes this far beyond the far edge mean the zone is breaking
-FAILURE_BARS = 1  # one close beyond the head invalidates (step 6)
+FAILURE_BARS = 2
 
 KNIFE_ATR = 2.5
 KNIFE_BARS = 3
@@ -72,7 +47,6 @@ HOLD_TEXTS = {
     "SPREAD": "spread i lartë — hyrja do ta paguante spike-un",
     "KNIFE": "çmimi po bie/ngjitet me forcë përmes zonës — pa ndalesë s'ka konfirmim",
     "REACTION": "çmimi s'është larguar ende nga ekstremi — asgjë nuk u mbrojt",
-    "BREAK": "zona më e afërt demand/supply ende e pathyer — pa thyerje s'ka hyrje (hapi 3)",
 }
 
 
@@ -123,23 +97,8 @@ class Verdict:
         return any(s.is_primary for s in self.signals)
 
     @property
-    def core(self) -> list[str]:
-        """Which of the owner's three confirmations actually appeared."""
-        return [s.code for s in self.signals if s.code in CORE]
-
-    @property
-    def strength(self) -> int:
-        """1 is an entry, 2 is stronger, 3 is as strong as this engine can read."""
-        return len(self.core)
-
-    @property
-    def strength_text(self) -> str:
-        return STRENGTH_TEXT.get(self.strength, "pa konfirmim")
-
-    @property
     def confirmed(self) -> bool:
-        """Step 3 is not one confirmation among several. Without the break there is no entry."""
-        return REQUIRED in self.codes
+        return self.score >= SCORE_MIN and self.has_primary
 
     @property
     def ready(self) -> bool:
@@ -237,8 +196,8 @@ def _rejection(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
     return None
 
 
-def _break_on(setup: Setup, bars: list[Candle], scale: Scale) -> float | None:
-    """The level of the nearest opposing zone broken on this series, or None if it still holds."""
+def _shift(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
+    """A close beyond the last opposing micro-swing — and the swing has to be worth breaking."""
     if len(bars) < 5:
         return None
     clear = scale.of(MIN_BREAK_ATR)
@@ -253,99 +212,11 @@ def _break_on(setup: Setup, bars: list[Candle], scale: Scale) -> float | None:
         if abs(level - base) < height_needed:
             return None  # the most recent structure is noise, not a level anyone defends
         for bar in after:
-            if (bar.c >= level + clear) if setup.is_long else (bar.c <= level - clear):
-                return level
+            broke = (bar.c >= level + clear) if setup.is_long else (bar.c <= level - clear)
+            if broke:
+                return Signal("SHIFT", f"struktura mikro u thye përtej {level:.2f}")
         return None  # the most recent real swing is still intact
     return None
-
-
-def _zone_break(setup: Setup, ctx, scale: Scale) -> Signal | None:
-    """The nearest opposing demand (short) or supply (long), broken.
-
-    Read on M1, M5 and M15, because the nearest zone can live on any of them: a short into an M15
-    supply is confirmed by the M15 demand giving way, and looking only at M1 would miss it. When
-    more than one timeframe has broken, the one whose level sits nearest the entry zone is reported
-    — that is the zone price actually had to get through.
-    """
-    found: list[tuple[float, str, float]] = []
-    for timeframe in BREAK_TIMEFRAMES:
-        level = _break_on(setup, ctx.candles(timeframe)[-BREAK_BARS:], scale)
-        if level is not None:
-            found.append((abs(level - setup.zone_mid), timeframe, level))
-    if not found:
-        return None
-    _distance, timeframe, level = min(found)
-    zone_word = "supply" if setup.is_long else "demand"
-    others = len(found) - 1
-    extra = f" (+{others} tjetër)" if others == 1 else f" (+{others} të tjera)" if others else ""
-    return Signal("ZONE_BREAK", f"{zone_word} {timeframe} më i afërt u thye te {level:.2f}{extra}")
-
-
-def _ao_divergence(setup: Setup, series: list[Candle], scale: Scale) -> Signal | None:
-    """Price made a new extreme and the oscillator did not: the push had nothing behind it.
-
-    Read on the full M1 series, not the window since the touch — the oscillator needs 34 bars of
-    history before it means anything, and the divergence usually forms before price reaches a zone.
-    """
-    values = awesome_oscillator(series)
-    if len(values) < 6:
-        return None
-    aligned = series[len(series) - len(values) :]
-    indices = swing_low_indices(aligned) if setup.is_long else swing_high_indices(aligned)
-    if len(indices) < 2:
-        return None
-    first, second = indices[-2], indices[-1]
-    clear = scale.of(MIN_BREAK_ATR)
-    if setup.is_long:
-        if aligned[second].l <= aligned[first].l - clear and values[second] > values[first]:
-            return Signal("AO_DIV", f"minimum më i ulët te {aligned[second].l:.2f}, AO jo — divergjencë blerjeje")
-    elif aligned[second].h >= aligned[first].h + clear and values[second] < values[first]:
-        return Signal("AO_DIV", f"maksimum më i lartë te {aligned[second].h:.2f}, AO jo — divergjencë shitjeje")
-    return None
-
-
-def _quasimodo(setup: Setup, series: list[Candle], scale: Scale) -> Signal | None:
-    """Left shoulder, a higher head, the neckline broken, and price back at the shoulder.
-
-    The confirmation that needs no oscillator: the head takes the liquidity above the shoulder, the
-    break below the neckline says who won, and the return to the shoulder is where the entry lives.
-    """
-    if len(series) < 8:
-        return None
-    clear = scale.of(MIN_BREAK_ATR)
-    indices = swing_low_indices(series) if setup.is_long else swing_high_indices(series)
-    if len(indices) < 2:
-        return None
-    shoulder_i, head_i = indices[-2], indices[-1]
-    between = series[shoulder_i : head_i + 1]
-    after = series[head_i + 1 :]
-    if not between or not after:
-        return None
-    if setup.is_long:
-        shoulder, head = series[shoulder_i].l, series[head_i].l
-        if head > shoulder - clear:
-            return None  # no lower head: this is not a quasimodo
-        neckline = max(bar.h for bar in between)
-        broke = [i for i, bar in enumerate(after) if bar.c >= neckline + clear]
-        if not broke:
-            return None
-        # The right shoulder is a return that happens AFTER the neckline gave way. A dip back to
-        # the shoulder level before the break is just the pattern still forming.
-        right = after[broke[0] + 1 :]
-        back_at_shoulder = any(bar.l <= shoulder + clear for bar in right)
-    else:
-        shoulder, head = series[shoulder_i].h, series[head_i].h
-        if head < shoulder + clear:
-            return None
-        neckline = min(bar.l for bar in between)
-        broke = [i for i, bar in enumerate(after) if bar.c <= neckline - clear]
-        if not broke:
-            return None
-        right = after[broke[0] + 1 :]
-        back_at_shoulder = any(bar.h >= shoulder - clear for bar in right)
-    if not back_at_shoulder:
-        return None
-    return Signal("QUASIMODO", f"quasimodo: koka mori {shoulder:.2f}, qafa u thye te {neckline:.2f}")
 
 
 def _momentum(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
@@ -427,11 +298,10 @@ def extreme_since(setup: Setup, bars: list[Candle], fallback: float) -> float:
 
 
 def zone_failed(setup: Setup, ctx, touch_ts: float) -> bool:
-    """A close clearly beyond the far edge of the zone: the quasimodo head has given way.
+    """Consecutive closes clearly beyond the far edge: the zone is being broken, not defended.
 
-    Step 6 of the owner's strategy: *nëse një qiri mbyllet jashtë zonës së QM — mbi Head për Sell,
-    nën Head për Buy — setup-i është i anuluar*. One close is the rule, and the margin exists only
-    so that a close one tick past the edge is not mistaken for one.
+    This is not a cancellation — only the stop and TP1 cancel. It means the evidence gathered so far
+    describes a reaction that no longer exists, so it must not be carried forward.
     """
     bars = window(ctx, touch_ts)
     atr = ctx.atr("M1") or 0.0
@@ -452,26 +322,20 @@ def evaluate(setup: Setup, ctx, touch_ts: float) -> Verdict:
     extreme = extreme_since(setup, bars, setup.zone_low if setup.is_long else setup.zone_high)
     signals: list[Signal] = []
     if scale.usable:
-        series = ctx.candles("M1")[-AO_MIN_BARS:]
         signals = [
             signal
             for signal in (
-                _zone_break(setup, ctx, scale),
-                _ao_divergence(setup, series, scale),
-                _quasimodo(setup, series, scale),
                 _reclaim(setup, bars, scale),
                 _rejection(setup, bars, scale),
+                _shift(setup, bars, scale),
                 _momentum(setup, bars, scale),
                 _absorption(setup, bars, scale),
             )
             if signal is not None
         ]
-    holds = holds_for(setup, ctx, bars, scale, extreme, price)
-    if scale.usable and REQUIRED not in [signal.code for signal in signals]:
-        holds.append("BREAK")
     return Verdict(
         signals=signals,
-        holds=holds,
+        holds=holds_for(setup, ctx, bars, scale, extreme, price),
         extreme=extreme,
         advance_r=advance_r(setup, price, setup.risk),
         bars=len(bars),

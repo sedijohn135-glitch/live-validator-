@@ -71,23 +71,11 @@ def _targets_line(targets: list[float], rr: list[float], decimals: int) -> str:
 
 
 def _evidence_lines(data: dict[str, Any]) -> list[str]:
-    """What confirmed, how strong it is, and which of the three actually appeared.
-
-    The strength is the headline: the owner reads 2/3 and knows two independent confirmations landed
-    on the same zone, whichever two they happened to be.
-    """
     signals = data.get("signals") or []
     if not signals:
         return []
-    core = data.get("core") or []
-    strength = data.get("strength", len(core))
-    lines = []
-    if strength:
-        lines.append(f"Konfirmimi: <b>{strength}/3</b> — {esc(data.get('strength_text', ''))}")
-        lines.append("  " + " + ".join(esc(code) for code in core))
-    other = [code for code, _detail in signals if code not in core]
-    if other:
-        lines.append("Mbështetje: " + " + ".join(esc(code) for code in other))
+    codes = " + ".join(esc(code) for code, _detail in signals)
+    lines = [f"Evidenca: {codes} ({data.get('score', 0)} pikë)"]
     lines += [f"  • {esc(detail)}" for _code, detail in signals]
     return lines
 
@@ -285,12 +273,12 @@ def cancel_message(data: dict[str, Any], decimals: int) -> str:
 
 
 def zone_failed_message(data: dict[str, Any], decimals: int) -> str:
-    """A candle closed beyond the head of the quasimodo: the setup is invalid (strategy step 6)."""
+    """Not a cancellation: the zone broke, so the evidence starts over if price comes back."""
     return "\n".join(
         [
-            _head("❌", "SETUPI U ANULUA — ZONA U THYE", data["symbol"], data["direction"]),
-            f"Një qiri mbylli përtej zonës QM te {num(data.get('price'), decimals)}.",
-            "Modeli u prish para se stopi të preket. Nëse ke hyrë, mbylle manualisht me humbje të vogël.",
+            _head("⚠️", "ZONA PO THYHET", data["symbol"], data["direction"]),
+            f"Çmimi mbylli përtej zonës te {num(data.get('price'), decimals)}.",
+            "Evidenca u rivendos. Setupi mbetet gjallë — nëse çmimi kthehet, konfirmimi fillon nga e para.",
             f"ID: {esc(data['setup_id'])}",
         ]
     )

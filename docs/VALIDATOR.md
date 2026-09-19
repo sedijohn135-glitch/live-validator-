@@ -37,18 +37,11 @@ fields are repaired, never refused:
 Only a payload with no usable number at all (no stop, no entry) cannot become a setup. That is a
 parse failure, reported as such, not a verdict on the trade.
 
-### 1.3 There are exactly three cancellations
+### 1.3 There are exactly two cancellations
 
 1. **Stop touched before the entry was touched** → `CANCELLED_SL_FIRST`.
 2. **TP1 touched before the entry was touched** → `CANCELLED_TP1_FIRST` (the move happened without
    you; chasing it is a new idea, not this one).
-3. **A candle closed beyond the head of the quasimodo** → `CANCELLED_ZONE_BROKEN`. Strategy step 6:
-   *nëse një qiri mbyllet jashtë zonës së QM, setup-i është i anuluar*. The head is the far edge of
-   the entry zone, and the stop sits a buffer beyond it — so cancelling on the close costs less than
-   waiting for the stop. If the owner is already in, the message says to close manually.
-
-This was two until the strategy was written out in full; the third is the owner's own invalidation
-rule, and it fires earlier than the stop rather than in addition to it.
 
 Nothing else cancels a setup. No expiry, no session end, no news, no "too old". A setup that is
 never touched simply waits.
@@ -66,43 +59,23 @@ structure. (That was a real defect, found in production on 2026-09-18.)
 
 | Signal | Weight | Definition (LONG; mirror for SHORT) |
 |---|---|---|
-| `RECLAIM` | support | Price took out the liquidity level — the zone low, or the running low if price had already traded under it — by ≥ 0.25 × ATR, and within 3 M1 candles closed back past that level by ≥ 0.20 × ATR. A sweep and reclaim inside one candle counts only if that candle is a proper rejection candle. |
-| `REJECTION` | support | A candle of range ≥ 0.60 × ATR wicks into the zone and closes ≥ 0.20 × ATR beyond its edge, with a wick ≥ 55 % of the range and the close in the top third, **or** an engulfing candle with body ≥ 0.60 × ATR closing past the previous candle's extreme. |
-| `ZONE_BREAK` | **confirmation** | The nearest opposing demand (short) or supply (long), broken: a close ≥ 0.15 × ATR beyond the most recent opposing swing — and that swing must itself stand ≥ 0.50 × ATR above the low that followed it. Read on **M1, M5 and M15**, because the nearest zone can live on any of them; when more than one has broken, the level nearest the entry zone is the one reported. |
-| `AO_DIV` | **confirmation** | Awesome Oscillator divergence on the M1 series (SMA5 − SMA34 of the median price): price made a new extreme past the previous swing by ≥ 0.15 × ATR and the oscillator did not follow. Read on the whole series, not only since the touch — the divergence usually forms before price arrives. |
-| `QUASIMODO` | **confirmation** | A left shoulder, a head that takes the liquidity beyond it by ≥ 0.15 × ATR, a close through the neckline between them, and price back at the shoulder. The return must come **after** the break: a dip to the shoulder while the neckline still holds is the pattern forming, not the pattern. |
-| `MOMENTUM` | support | An M1 candle in the trade direction with body ≥ 0.9 × ATR **and** its close in the top third of its range: an impulse, not a wide candle that gave it back. |
-| `ABSORPTION` | support | Three consecutive M1 closes holding the zone's better half, while at least one of them was pressed into the worse half. Drifting through the zone is not a defence. |
+| `RECLAIM` | 2 (primary) | Price took out the liquidity level — the zone low, or the running low if price had already traded under it — by ≥ 0.25 × ATR, and within 3 M1 candles closed back past that level by ≥ 0.20 × ATR. A sweep and reclaim inside one candle counts only if that candle is a proper rejection candle. |
+| `REJECTION` | 2 (primary) | A candle of range ≥ 0.60 × ATR wicks into the zone and closes ≥ 0.20 × ATR beyond its edge, with a wick ≥ 55 % of the range and the close in the top third, **or** an engulfing candle with body ≥ 0.60 × ATR closing past the previous candle's extreme. |
+| `SHIFT` | 2 (primary) | An M1 close ≥ 0.15 × ATR beyond the most recent opposing micro-swing — and that swing must itself stand ≥ 0.50 × ATR above the low that followed it. A swing two ticks tall is not a level anyone defends. |
+| `MOMENTUM` | 1 | An M1 candle in the trade direction with body ≥ 0.9 × ATR **and** its close in the top third of its range: an impulse, not a wide candle that gave it back. |
+| `ABSORPTION` | 1 | Three consecutive M1 closes holding the zone's better half, while at least one of them was pressed into the worse half. Drifting through the zone is not a defence. |
 
-**Verdict: enter when `ZONE_BREAK` is present. Nothing substitutes for it.**
+**Verdict: enter when `score ≥ 3` and at least one primary signal is present.**
 
-That is strategy step 3, and it is the whole gate: before any entry price must break the nearest
-opposing zone — a demand area or recent support for a sell, a supply area or recent resistance for
-a buy. Without it the verdict holds on `BREAK`. *Instant Entry është e ndaluar.*
-
-The other two are read for **strength**, never for entry:
-
-```
-ZONE_BREAK                        1/3  konfirmim
-ZONE_BREAK + one other            2/3  konfirmim i fortë
-ZONE_BREAK + AO_DIV + QUASIMODO   3/3  konfirmim shumë i fortë
-```
-
-`AO_DIV` is strategy step 2, and step 2 says it plainly: *divergjenca NUK është sinjal hyrjeje, por
-paralajmërim për t'u përgatitur për setupin QM*. It raises the strength of an entry the break has
-already made; it never makes one. `QUASIMODO` forming live says the pattern the analysis drew is
-still the pattern the market is trading.
-
-The supporting signals — reclaim, rejection, momentum, absorption — are reported with the entry and
-never produce one.
+That is the balance the owner asked for: never a single lone signal (too early), never a six-step
+checklist (too late). Two independent confirmations, one of which must be structural.
 
 Worked examples:
 
-- `ZONE_BREAK` → 1/3 ✅ the nearest M5 demand gave way
-- `ZONE_BREAK` + `QUASIMODO` → 2/3 ✅
-- `ZONE_BREAK` + `AO_DIV` + `QUASIMODO` → 3/3 ✅
-- `AO_DIV` + `RECLAIM` + `MOMENTUM` → ❌ held on `BREAK`: the warning came, the break did not
-- `MOMENTUM` + `ABSORPTION` → ❌ the zone reacted, but nothing broke
+- `RECLAIM` + `MOMENTUM` = 3 ✅
+- `REJECTION` + `ABSORPTION` = 3 ✅
+- `SHIFT` + `REJECTION` = 4 ✅
+- `MOMENTUM` + `ABSORPTION` = 2 ❌ (no primary — the zone reacted, but nothing confirmed it)
 
 ### 2.1 Holds — reasons to wait, never to cancel
 
@@ -110,7 +83,6 @@ A hold delays the ENTER message and is reported with its reason. The setup stays
 
 | Hold | Condition | Why |
 |---|---|---|
-| `BREAK` | `ZONE_BREAK` is absent — the nearest opposing demand or supply still holds | strategy step 3: *nëse nuk ka thyerje zone, anuloje çdo setup. Instant Entry është e ndaluar* |
 | `SPREAD` | spread > max(3 × median spread of the last hour, 0.5 × ATR(M1)) | entering into a spread spike pays the spike |
 | `KNIFE` | the last 3 M1 candles travelled > 2.5 × ATR(M1) against the trade | a falling knife is not a rejection |
 | `DATA` | quote older than 30 s, synthetic price, or a gap in the M1 series | no evidence without data |

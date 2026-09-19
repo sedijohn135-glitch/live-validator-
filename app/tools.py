@@ -13,7 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from app.evidence import BREAK_TIMEFRAMES, CORE, LATE_ADVANCE_R, REQUIRED, STRENGTH_TEXT, WEIGHTS
+from app.evidence import LATE_ADVANCE_R, PRIMARY, SCORE_MIN, WEIGHTS
 from app.runtime import Runtime
 
 REQUIRED_FIELDS = ("symbol", "stop_loss", "entry (or entry_low + entry_high)")
@@ -110,39 +110,14 @@ def register(server: MCPServer, runtime: Runtime) -> None:
                     "entry touch, then protects the profit."
                 ),
                 "entry": {
-                    "required": REQUIRED,
-                    "rule": (
-                        "no entry without ZONE_BREAK (strategy step 3); AO_DIV and QUASIMODO raise "
-                        "the strength of an entry the break already made, and never make one"
-                    ),
-                    "confirmations": list(CORE),
-                    "strength": {str(n): text for n, text in STRENGTH_TEXT.items()},
-                    "zone_break_timeframes": list(BREAK_TIMEFRAMES),
-                    "zone_break_means": (
-                        "the nearest opposing demand (short) or supply (long) gives way; the nearest "
-                        "zone can live on any of M1, M5 or M15, so all three are read"
-                    ),
-                    "ao_div_means": (
-                        "Awesome Oscillator divergence, SMA5 - SMA34 of the median price: price made "
-                        "a new extreme past the previous swing and the oscillator did not follow. "
-                        "An early warning (strategy step 2), never an entry signal"
-                    ),
-                    "quasimodo_means": (
-                        "left shoulder, a head beyond it, an M1 close through the neckline, then "
-                        "price back at the shoulder - the return must come after the break"
-                    ),
-                    "supporting_signals": ["RECLAIM", "REJECTION", "MOMENTUM", "ABSORPTION"],
-                    "substitution": (
-                        "apart from the required break, the engine counts whatever appeared rather "
-                        "than waiting for the sign the analysis predicted: the market rarely gives "
-                        "exactly that sign, and an engine that waits for it stays blind"
-                    ),
+                    "score_min": SCORE_MIN,
+                    "primary_required": True,
                     "signals": WEIGHTS,
+                    "primary_signals": list(PRIMARY),
                     "late_advance_r": LATE_ADVANCE_R,
                 },
-                "holds_never_reject": ["SPREAD", "KNIFE", "DATA", "FRESH", "REACTION"],
+                "holds_never_reject": ["SPREAD", "KNIFE", "DATA", "FRESH"],
                 "cancellations": [
-                    "a candle closed beyond the head of the quasimodo (the far edge of the zone)",
                     "stop touched before the entry was touched",
                     "TP1 touched before the entry was touched",
                 ],

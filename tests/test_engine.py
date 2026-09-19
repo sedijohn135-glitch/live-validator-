@@ -27,18 +27,10 @@ def plan_of(feed: Feed, setup_id: str) -> dict:
 
 
 def confirm_long(feed: Feed) -> None:
-    """A sweep-and-reclaim, a strong body, and the nearest supply broken.
-
-    The break is not one confirmation among several — it is the one the validator will not enter
-    without, so the tape that confirms has to contain it.
-    """
+    """A sweep-and-reclaim plus a strong body: the balance the validator asks for."""
     feed.tape.sweep(low=4291.0, close=4298.0)
     atr = feed.tape.context().atr("M1") or 1.0
-    peak = 4298.0 + 2 * atr
-    feed.tape.push(4298.0, peak, 4297.8, 4298.0 + 1.8 * atr)  # the swing high that becomes supply
-    dip = peak - 1.4 * atr
-    feed.tape.push(4298.0 + 1.8 * atr, peak - 0.1 * atr, dip, dip + 0.1 * atr)  # pullback off it
-    feed.tape.push(dip + 0.1 * atr, peak + 0.8 * atr, dip, peak + 0.6 * atr)  # closes through it
+    feed.tape.push(4298.0, 4298.0 + 2 * atr, 4297.8, 4298.0 + 1.8 * atr)
 
 
 def test_every_setup_is_registered_whatever_it_looks_like(tmp_path):
@@ -77,8 +69,7 @@ def test_the_full_path_from_registration_to_enter_now(tmp_path):
     text = feed.last_message()
     assert "HYR TANI" in text
     assert "Siguro fitimet" in text
-    assert "Konfirmimi: <b>1/3</b>" in text, "the strength is the headline"
-    assert "ZONE_BREAK" in text
+    assert "Evidenca:" in text
 
 
 def test_a_zone_crossed_between_two_passes_still_counts_as_touched(tmp_path):
@@ -265,26 +256,3 @@ def test_the_touch_is_the_whole_zone_not_a_single_price(tmp_path, price):
     quiet_approach(feed)
     feed.tick(price=price)
     assert feed.state(setup_id) == "AT_ZONE"
-
-
-def test_a_close_beyond_the_head_cancels_the_setup(tmp_path):
-    """Strategy step 6, end to end: the quasimodo is dead, so the setup is.
-
-    Cancelling here costs less than waiting for the stop, which sits a buffer further out. It is the
-    third cancellation; the other two are still the stop and TP1 reached before the entry.
-    """
-    feed = Feed(tmp_path, price=4320.0)
-    setup_id = feed.submit(**ZONE)["setup_id"]
-    quiet_approach(feed)
-    feed.tick(price=4298.0)
-    assert feed.state(setup_id) == "AT_ZONE"
-
-    atr = feed.tape.context().atr("M1") or 1.0
-    low = ZONE["entry_low"]
-    feed.tape.push(low, low, low - 2 * atr, low - 1.5 * atr)  # one candle closing below the head
-    feed.tick(price=low - 1.5 * atr)
-
-    assert feed.outcome(setup_id) == "CANCELLED_ZONE_BROKEN"
-    text = feed.last_message()
-    assert "SETUPI U ANULUA — ZONA U THYE" in text
-    assert "mbylle manualisht" in text

@@ -146,38 +146,3 @@ def test_session_levels():
     assert levels["six_am_open"] is not None
     assert levels["pdh"] is not None and levels["pwh"] is not None
     assert levels["lookback_high"] >= levels["pdh"]
-
-
-# ------------------------------------------------- the oscillator, computed for the model
-def test_the_awesome_oscillator_matches_its_definition():
-    """SMA5 - SMA34 of the median price, and nothing clever. Checked against a hand computation."""
-    from app.market import AO_SLOW, awesome_oscillator
-
-    bars = [Candle(float(i), 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i) for i in range(40)]
-    values = awesome_oscillator(bars)
-    assert len(values) == len(bars) - AO_SLOW + 1
-
-    medians = [(bar.h + bar.l) / 2 for bar in bars]
-    assert values[-1] == pytest.approx(sum(medians[-5:]) / 5 - sum(medians[-34:]) / 34)
-
-
-def test_a_sell_divergence_is_named_from_the_candles_alone():
-    """Price makes a higher high, the oscillator does not follow.
-
-    The model reads this from the snapshot. It never works out a 34-period mean in prose, which is
-    the one part of this strategy an LLM cannot be trusted with.
-    """
-    from app.market import ao_divergence
-
-    bars = [Candle(float(i), 100.0 + i * 0.5, 101.0 + i * 0.5, 99.0 + i * 0.5, 100.5 + i * 0.5) for i in range(36)]
-    base = bars[-1].c
-    bars += [
-        Candle(36.0, base, base + 4.0, base - 0.5, base + 3.0),  # the first swing high
-        Candle(37.0, base + 3.0, base + 3.2, base - 6.0, base - 5.0),  # a drop that drains the AO
-        Candle(38.0, base - 5.0, base - 4.0, base - 8.0, base - 7.0),
-        Candle(39.0, base - 7.0, base + 4.5, base - 7.2, base + 1.0),  # a higher high, less force
-        Candle(40.0, base + 1.0, base + 1.2, base - 2.0, base - 1.5),
-    ]
-    side, detail = ao_divergence(bars)
-    assert side == "SELL", (side, detail)
-    assert "AO më poshtë" in detail
