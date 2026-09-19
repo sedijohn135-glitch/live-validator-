@@ -13,24 +13,29 @@ from dataclasses import dataclass, field
 from app.market import Candle, swing_high_indices, swing_low_indices
 from app.setup_model import Setup
 
-# The owner's three confirmations. They are equals: any one of them is an entry, and each extra one
-# makes the same entry stronger. Nothing here is a checklist — the analysis names the signs a model
-# usually shows, but the market gives what it gives, and the engine counts what actually appeared.
+# Step 3 of the owner's strategy, and the only thing that makes an entry: before any entry, price
+# must break the nearest opposing zone — a demand area or recent support for a sell, a supply area
+# or recent resistance for a buy. "Nëse nuk ka thyerje zone, anuloje çdo setup. Instant Entry është
+# e ndaluar." Nothing substitutes for it.
+REQUIRED = "ZONE_BREAK"
+
+# The other two are read for strength, never for entry. An AO divergence is Step 2 — an early
+# warning to prepare for the setup, explicitly *not* an entry signal. A quasimodo forming live at
+# the zone says the pattern the analysis drew is still the pattern the market is trading.
 CORE = ("ZONE_BREAK", "AO_DIV", "QUASIMODO")
 STRENGTH_TEXT = {1: "konfirmim", 2: "konfirmim i fortë", 3: "konfirmim shumë i fortë"}
 
-# Supporting evidence: never enough on its own, always worth reporting alongside a core signal.
-PRIMARY = CORE
+PRIMARY = (REQUIRED,)
 WEIGHTS = {
     "ZONE_BREAK": 2,
-    "AO_DIV": 2,
-    "QUASIMODO": 2,
+    "AO_DIV": 1,
+    "QUASIMODO": 1,
     "RECLAIM": 1,
     "REJECTION": 1,
     "MOMENTUM": 1,
     "ABSORPTION": 1,
 }
-SCORE_MIN = 2  # one core confirmation; the score is reported, the strength is what decides
+SCORE_MIN = 2  # the break itself; the score is reported, the break is what decides
 
 BREAK_TIMEFRAMES = ("M1", "M5", "M15")  # the nearest demand/supply can live on any of them
 BREAK_BARS = 60
@@ -53,7 +58,7 @@ MIN_BREAK_ATR = 0.15  # a structure break must clear the swing by this much
 MIN_SWING_ATR = 0.50  # and the swing it breaks must itself be this tall
 MIN_REACTION_ATR = 0.50  # price must have left the extreme: nothing else proves a defence
 FAILURE_ATR = 0.50  # closes this far beyond the far edge mean the zone is breaking
-FAILURE_BARS = 2
+FAILURE_BARS = 1  # one close beyond the head invalidates (step 6)
 
 KNIFE_ATR = 2.5
 KNIFE_BARS = 3
@@ -68,7 +73,7 @@ HOLD_TEXTS = {
     "SPREAD": "spread i lartë — hyrja do ta paguante spike-un",
     "KNIFE": "çmimi po bie/ngjitet me forcë përmes zonës — pa ndalesë s'ka konfirmim",
     "REACTION": "çmimi s'është larguar ende nga ekstremi — asgjë nuk u mbrojt",
-    "CONFIRMATION": "asnjë nga tri konfirmimet: thyerje demand/supply, divergjencë AO, quasimodo",
+    "BREAK": "zona më e afërt demand/supply ende e pathyer — pa thyerje s'ka hyrje (hapi 3)",
 }
 
 
@@ -134,7 +139,8 @@ class Verdict:
 
     @property
     def confirmed(self) -> bool:
-        return self.strength >= 1
+        """Step 3 is not one confirmation among several. Without the break there is no entry."""
+        return REQUIRED in self.codes
 
     @property
     def ready(self) -> bool:
@@ -435,10 +441,11 @@ def extreme_since(setup: Setup, bars: list[Candle], fallback: float) -> float:
 
 
 def zone_failed(setup: Setup, ctx, touch_ts: float) -> bool:
-    """Consecutive closes clearly beyond the far edge: the zone is being broken, not defended.
+    """A close clearly beyond the far edge of the zone: the quasimodo head has given way.
 
-    This is not a cancellation — only the stop and TP1 cancel. It means the evidence gathered so far
-    describes a reaction that no longer exists, so it must not be carried forward.
+    Step 6 of the owner's strategy: *nëse një qiri mbyllet jashtë zonës së QM — mbi Head për Sell,
+    nën Head për Buy — setup-i është i anuluar*. One close is the rule, and the margin exists only
+    so that a close one tick past the edge is not mistaken for one.
     """
     bars = window(ctx, touch_ts)
     atr = ctx.atr("M1") or 0.0
@@ -474,6 +481,8 @@ def evaluate(setup: Setup, ctx, touch_ts: float) -> Verdict:
             if signal is not None
         ]
     holds = holds_for(setup, ctx, bars, scale, extreme, price)
+    if scale.usable and REQUIRED not in [signal.code for signal in signals]:
+        holds.append("BREAK")
     return Verdict(
         signals=signals,
         holds=holds,

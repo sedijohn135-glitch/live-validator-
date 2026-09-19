@@ -243,7 +243,8 @@ def test_without_a_reaction_off_the_extreme_nothing_is_confirmed():
     assert not stalled.ready
 
 
-def test_the_zone_breaking_is_not_the_same_as_the_zone_holding():
+def test_one_close_beyond_the_head_invalidates_the_zone():
+    """Step 6: një qiri që mbyllet jashtë zonës së QM e anulon setupin. One candle, not two."""
     from app.evidence import zone_failed
 
     tape = approach()
@@ -252,9 +253,41 @@ def test_the_zone_breaking_is_not_the_same_as_the_zone_holding():
     assert not zone_failed(setup, tape.context(), touch)
 
     atr = tape.context().atr("M1") or 1.0
-    for _ in range(2):
-        tape.push(setup.zone_low, setup.zone_low, setup.zone_low - 2 * atr, setup.zone_low - 1.5 * atr)
-    assert zone_failed(setup, tape.context(), touch)
+    tape.push(setup.zone_low, setup.zone_low, setup.zone_low - 2 * atr, setup.zone_low - 1.5 * atr)
+    assert zone_failed(setup, tape.context(), touch), "one close beyond the head is the rule"
+
+
+def test_a_close_just_past_the_edge_is_not_a_break():
+    """The margin exists so a tick past the edge is not mistaken for a candle closing outside."""
+    from app.evidence import zone_failed
+
+    tape = approach()
+    touch = tape.now
+    setup = long_setup()
+    tape.push(setup.zone_low, setup.zone_low, setup.zone_low - 0.02, setup.zone_low - 0.01)
+    assert not zone_failed(setup, tape.context(), touch)
+
+
+def test_an_ao_divergence_alone_is_never_an_entry():
+    """Step 2 is explicit: divergjenca NUK është sinjal hyrjeje, por paralajmërim.
+
+    It raises the strength of an entry the break has already made. It never makes one.
+    """
+    tape = Tape(price=4300.0)
+    tape.drift(40, step=0.25, span=0.4)
+    touch = tape.now
+    tape.drift(10, step=-0.10, span=0.3)
+    _bar(tape, tape.price, tape.price + 1.2, tape.price - 0.2, tape.price + 0.4)
+    tape.drift(3, step=-0.25, span=0.2)
+    top = tape.price + 2.0
+    _bar(tape, tape.price, top, tape.price - 0.2, top - 0.4)
+    tape.drift(2, step=-0.2, span=0.2)
+    setup = normalise({"entry_low": top - 1.0, "entry_high": top + 1.0, "stop_loss": top + 5.0, "tp1": top - 20.0})
+    verdict = verdict_for(tape, setup, touch)
+    assert "AO_DIV" in verdict.codes, verdict.codes
+    assert "ZONE_BREAK" not in verdict.codes
+    assert "BREAK" in verdict.holds
+    assert not verdict.confirmed, "a warning is not an entry"
 
 
 # ------------------------------------------------ the setup that failed on 2026-09-18

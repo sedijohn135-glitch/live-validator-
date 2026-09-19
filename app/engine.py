@@ -284,21 +284,13 @@ class Engine:
         base: dict[str, Any],
         decimals: int,
     ) -> None:
-        """Price closed through the zone: the reaction it was building no longer exists.
+        """A candle closed beyond the head: the quasimodo is dead, so the setup is (step 6).
 
-        The setup is not cancelled — only the stop and TP1 do that. But evidence describing a defence
-        that failed must not be carried forward, so the watch starts over from the next touch.
+        Cancelling here costs less than waiting for the stop, which sits a buffer further out. This
+        is the third cancellation, added when the strategy was written out in full; the other two
+        remain the stop and TP1 reached before the entry was ever touched.
         """
-        computed["touch_ts"] = None
-        computed["seen"] = []
-        computed["progress_at"] = 0.0
-        with self.store.transaction() as conn:
-            conn.execute(
-                "UPDATE setups SET state = ?, tap_at = NULL, computed_json = ?, score = 0 WHERE id = ?",
-                (WATCHING, json.dumps(computed, default=str), setup_id),
-            )
-            self.store.add_event(conn, setup_id, now, "ZONE_FAILED", base)
-            self._queue(conn, setup_id, f"failed:{int(now)}", tg.zone_failed_message(base, decimals), now)
+        self._close(setup_id, "CANCELLED_ZONE_BROKEN", now, base, tg.zone_failed_message(base, decimals))
 
     def _approach_note(
         self,

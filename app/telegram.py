@@ -285,12 +285,12 @@ def cancel_message(data: dict[str, Any], decimals: int) -> str:
 
 
 def zone_failed_message(data: dict[str, Any], decimals: int) -> str:
-    """Not a cancellation: the zone broke, so the evidence starts over if price comes back."""
+    """A candle closed beyond the head of the quasimodo: the setup is invalid (strategy step 6)."""
     return "\n".join(
         [
-            _head("⚠️", "ZONA PO THYHET", data["symbol"], data["direction"]),
-            f"Çmimi mbylli përtej zonës te {num(data.get('price'), decimals)}.",
-            "Evidenca u rivendos. Setupi mbetet gjallë — nëse çmimi kthehet, konfirmimi fillon nga e para.",
+            _head("❌", "SETUPI U ANULUA — ZONA U THYE", data["symbol"], data["direction"]),
+            f"Një qiri mbylli përtej zonës QM te {num(data.get('price'), decimals)}.",
+            "Modeli u prish para se stopi të preket. Nëse ke hyrë, mbylle manualisht me humbje të vogël.",
             f"ID: {esc(data['setup_id'])}",
         ]
     )

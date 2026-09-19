@@ -37,11 +37,18 @@ fields are repaired, never refused:
 Only a payload with no usable number at all (no stop, no entry) cannot become a setup. That is a
 parse failure, reported as such, not a verdict on the trade.
 
-### 1.3 There are exactly two cancellations
+### 1.3 There are exactly three cancellations
 
 1. **Stop touched before the entry was touched** → `CANCELLED_SL_FIRST`.
 2. **TP1 touched before the entry was touched** → `CANCELLED_TP1_FIRST` (the move happened without
    you; chasing it is a new idea, not this one).
+3. **A candle closed beyond the head of the quasimodo** → `CANCELLED_ZONE_BROKEN`. Strategy step 6:
+   *nëse një qiri mbyllet jashtë zonës së QM, setup-i është i anuluar*. The head is the far edge of
+   the entry zone, and the stop sits a buffer beyond it — so cancelling on the close costs less than
+   waiting for the stop. If the owner is already in, the message says to close manually.
+
+This was two until the strategy was written out in full; the third is the owner's own invalidation
+rule, and it fires earlier than the stop rather than in addition to it.
 
 Nothing else cancels a setup. No expiry, no session end, no news, no "too old". A setup that is
 never touched simply waits.
@@ -67,32 +74,35 @@ structure. (That was a real defect, found in production on 2026-09-18.)
 | `MOMENTUM` | support | An M1 candle in the trade direction with body ≥ 0.9 × ATR **and** its close in the top third of its range: an impulse, not a wide candle that gave it back. |
 | `ABSORPTION` | support | Three consecutive M1 closes holding the zone's better half, while at least one of them was pressed into the worse half. Drifting through the zone is not a defence. |
 
-**Verdict: enter when at least one of the three confirmations is present.**
+**Verdict: enter when `ZONE_BREAK` is present. Nothing substitutes for it.**
+
+That is strategy step 3, and it is the whole gate: before any entry price must break the nearest
+opposing zone — a demand area or recent support for a sell, a supply area or recent resistance for
+a buy. Without it the verdict holds on `BREAK`. *Instant Entry është e ndaluar.*
+
+The other two are read for **strength**, never for entry:
 
 ```
-ZONE_BREAK · AO_DIV · QUASIMODO
-
-1 of 3  →  konfirmim               an entry
-2 of 3  →  konfirmim i fortë       the same entry, stronger
-3 of 3  →  konfirmim shumë i fortë as strong as this engine reads
+ZONE_BREAK                        1/3  konfirmim
+ZONE_BREAK + one other            2/3  konfirmim i fortë
+ZONE_BREAK + AO_DIV + QUASIMODO   3/3  konfirmim shumë i fortë
 ```
 
-They are **equals**. None is mandatory, none outranks another, and the strength is simply how many
-appeared. The supporting signals — reclaim, rejection, momentum, absorption — are reported with the
-entry and never produce one on their own.
+`AO_DIV` is strategy step 2, and step 2 says it plainly: *divergjenca NUK është sinjal hyrjeje, por
+paralajmërim për t'u përgatitur për setupin QM*. It raises the strength of an entry the break has
+already made; it never makes one. `QUASIMODO` forming live says the pattern the analysis drew is
+still the pattern the market is trading.
 
-**Why they substitute freely.** The analysis names a model and the signs that model usually shows.
-The market rarely gives exactly those signs; it gives *something*. An engine that waits for the one
-sign the analysis predicted stays blind while a different, equally valid confirmation prints in
-front of it. So the engine counts what actually appeared.
+The supporting signals — reclaim, rejection, momentum, absorption — are reported with the entry and
+never produce one.
 
 Worked examples:
 
 - `ZONE_BREAK` → 1/3 ✅ the nearest M5 demand gave way
-- `AO_DIV` + `RECLAIM` → 1/3 ✅ (the reclaim adds nothing to the strength, but is reported)
-- `ZONE_BREAK` + `QUASIMODO` → 2/3 ✅ the analysis expected a divergence; the shoulder did the work
+- `ZONE_BREAK` + `QUASIMODO` → 2/3 ✅
 - `ZONE_BREAK` + `AO_DIV` + `QUASIMODO` → 3/3 ✅
-- `MOMENTUM` + `ABSORPTION` → 0/3 ❌ the zone reacted, but none of the three confirmed it
+- `AO_DIV` + `RECLAIM` + `MOMENTUM` → ❌ held on `BREAK`: the warning came, the break did not
+- `MOMENTUM` + `ABSORPTION` → ❌ the zone reacted, but nothing broke
 
 ### 2.1 Holds — reasons to wait, never to cancel
 
@@ -100,6 +110,7 @@ A hold delays the ENTER message and is reported with its reason. The setup stays
 
 | Hold | Condition | Why |
 |---|---|---|
+| `BREAK` | `ZONE_BREAK` is absent — the nearest opposing demand or supply still holds | strategy step 3: *nëse nuk ka thyerje zone, anuloje çdo setup. Instant Entry është e ndaluar* |
 | `SPREAD` | spread > max(3 × median spread of the last hour, 0.5 × ATR(M1)) | entering into a spread spike pays the spike |
 | `KNIFE` | the last 3 M1 candles travelled > 2.5 × ATR(M1) against the trade | a falling knife is not a rejection |
 | `DATA` | quote older than 30 s, synthetic price, or a gap in the M1 series | no evidence without data |

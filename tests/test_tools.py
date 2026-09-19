@@ -130,12 +130,14 @@ def test_validator_rules_describes_the_evidence_not_a_strategy(tmp_path):
     payload = call(server, "validator_rules", {})
     assert payload["schema"] == "rules/2"
     entry = payload["entry"]
+    assert entry["required"] == "ZONE_BREAK", "step 3 is the gate"
     assert entry["confirmations"] == ["ZONE_BREAK", "AO_DIV", "QUASIMODO"]
-    assert "any one of the three" in entry["rule"]
+    assert "never make one" in entry["rule"]
+    assert "never an entry signal" in entry["ao_div_means"]
     assert entry["strength"] == {"1": "konfirmim", "2": "konfirmim i fortë", "3": "konfirmim shumë i fortë"}
     assert entry["zone_break_timeframes"] == ["M1", "M5", "M15"], "the nearest zone can live on any"
-    assert "stands in for any other" in entry["substitution"]
-    assert len(payload["cancellations"]) == 2
+    assert "apart from the required break" in entry["substitution"]
+    assert len(payload["cancellations"]) == 3
     assert "never rejects" in payload["principle"]
 
 

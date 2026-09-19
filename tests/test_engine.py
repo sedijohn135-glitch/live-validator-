@@ -265,3 +265,26 @@ def test_the_touch_is_the_whole_zone_not_a_single_price(tmp_path, price):
     quiet_approach(feed)
     feed.tick(price=price)
     assert feed.state(setup_id) == "AT_ZONE"
+
+
+def test_a_close_beyond_the_head_cancels_the_setup(tmp_path):
+    """Strategy step 6, end to end: the quasimodo is dead, so the setup is.
+
+    Cancelling here costs less than waiting for the stop, which sits a buffer further out. It is the
+    third cancellation; the other two are still the stop and TP1 reached before the entry.
+    """
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4298.0)
+    assert feed.state(setup_id) == "AT_ZONE"
+
+    atr = feed.tape.context().atr("M1") or 1.0
+    low = ZONE["entry_low"]
+    feed.tape.push(low, low, low - 2 * atr, low - 1.5 * atr)  # one candle closing below the head
+    feed.tick(price=low - 1.5 * atr)
+
+    assert feed.outcome(setup_id) == "CANCELLED_ZONE_BROKEN"
+    text = feed.last_message()
+    assert "SETUPI U ANULUA — ZONA U THYE" in text
+    assert "mbylle manualisht" in text
