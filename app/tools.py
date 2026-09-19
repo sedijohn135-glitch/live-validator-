@@ -13,7 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from app.evidence import LATE_ADVANCE_R, PRIMARY, SCORE_MIN, WEIGHTS
+from app.evidence import LATE_ADVANCE_R, PRIMARY, REQUIRED, SCORE_MIN, WEIGHTS
 from app.runtime import Runtime
 
 REQUIRED_FIELDS = ("symbol", "stop_loss", "entry (or entry_low + entry_high)")
@@ -112,11 +112,20 @@ def register(server: MCPServer, runtime: Runtime) -> None:
                 "entry": {
                     "score_min": SCORE_MIN,
                     "primary_required": True,
+                    "required": REQUIRED,
+                    "required_means": (
+                        "the nearest opposing demand (short) or supply (long) must break on M1; "
+                        "without it there is no entry, whatever else confirmed"
+                    ),
                     "signals": WEIGHTS,
                     "primary_signals": list(PRIMARY),
+                    "substitution": (
+                        "any signal may stand in for any other: the market rarely gives the exact "
+                        "sign the analysis expected, so the engine counts what actually appeared"
+                    ),
                     "late_advance_r": LATE_ADVANCE_R,
                 },
-                "holds_never_reject": ["SPREAD", "KNIFE", "DATA", "FRESH"],
+                "holds_never_reject": ["SPREAD", "KNIFE", "DATA", "FRESH", "REACTION", "STRUCTURE"],
                 "cancellations": [
                     "stop touched before the entry was touched",
                     "TP1 touched before the entry was touched",

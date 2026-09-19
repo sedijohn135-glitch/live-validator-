@@ -61,20 +61,35 @@ structure. (That was a real defect, found in production on 2026-09-18.)
 |---|---|---|
 | `RECLAIM` | 2 (primary) | Price took out the liquidity level — the zone low, or the running low if price had already traded under it — by ≥ 0.25 × ATR, and within 3 M1 candles closed back past that level by ≥ 0.20 × ATR. A sweep and reclaim inside one candle counts only if that candle is a proper rejection candle. |
 | `REJECTION` | 2 (primary) | A candle of range ≥ 0.60 × ATR wicks into the zone and closes ≥ 0.20 × ATR beyond its edge, with a wick ≥ 55 % of the range and the close in the top third, **or** an engulfing candle with body ≥ 0.60 × ATR closing past the previous candle's extreme. |
-| `SHIFT` | 2 (primary) | An M1 close ≥ 0.15 × ATR beyond the most recent opposing micro-swing — and that swing must itself stand ≥ 0.50 × ATR above the low that followed it. A swing two ticks tall is not a level anyone defends. |
+| `SHIFT` | 2 (primary, **required**) | The nearest opposing demand (short) or supply (long), broken: an M1 close ≥ 0.15 × ATR beyond the most recent opposing micro-swing — and that swing must itself stand ≥ 0.50 × ATR above the low that followed it. A swing two ticks tall is not a level anyone defends. |
+| `AO_DIV` | 2 (primary) | Awesome Oscillator divergence on the M1 series (SMA5 − SMA34 of the median price): price made a new extreme past the previous swing by ≥ 0.15 × ATR and the oscillator did not follow. Read on the whole series, not only since the touch — the divergence usually forms before price arrives. |
+| `QUASIMODO` | 2 (primary) | A left shoulder, a head that takes the liquidity beyond it by ≥ 0.15 × ATR, an M1 close through the neckline between them, and price back at the shoulder. The confirmation that needs no oscillator. |
 | `MOMENTUM` | 1 | An M1 candle in the trade direction with body ≥ 0.9 × ATR **and** its close in the top third of its range: an impulse, not a wide candle that gave it back. |
 | `ABSORPTION` | 1 | Three consecutive M1 closes holding the zone's better half, while at least one of them was pressed into the worse half. Drifting through the zone is not a defence. |
 
-**Verdict: enter when `score ≥ 3` and at least one primary signal is present.**
+**Verdict: enter when `SHIFT` is present, `score ≥ 3`, and at least one primary signal is present.**
+
+`SHIFT` — the break of the nearest opposing demand or supply — is the one condition nothing stands
+in for. Without it the verdict holds on `STRUCTURE`, whatever else the market showed. That is the
+owner's rule: *pa këtë s'ka hyrje*.
+
+**Everything else substitutes freely.** The analysis names a model and the signs it expects, but the
+market rarely gives exactly those signs — it gives *something*. An engine that waits for the one
+sign the analysis predicted stays blind while a different, equally valid confirmation prints in
+front of it. So the engine counts what actually appeared: an AO divergence stands in for a reclaim,
+a quasimodo stands in for a rejection, and the score is the score.
 
 That is the balance the owner asked for: never a single lone signal (too early), never a six-step
-checklist (too late). Two independent confirmations, one of which must be structural.
+checklist (too late). The mandatory break, plus two independent confirmations of which one is
+primary.
 
 Worked examples:
 
-- `RECLAIM` + `MOMENTUM` = 3 ✅
-- `REJECTION` + `ABSORPTION` = 3 ✅
-- `SHIFT` + `REJECTION` = 4 ✅
+- `SHIFT` + `RECLAIM` = 4 ✅
+- `SHIFT` + `MOMENTUM` = 3 ✅
+- `SHIFT` + `AO_DIV` = 4 ✅ (the analysis expected a reclaim; the market gave a divergence)
+- `SHIFT` + `QUASIMODO` = 4 ✅ (no oscillator needed — the shoulder did the work)
+- `AO_DIV` + `QUASIMODO` + `MOMENTUM` = 5 ❌ held on `STRUCTURE`: the nearest demand never broke
 - `MOMENTUM` + `ABSORPTION` = 2 ❌ (no primary — the zone reacted, but nothing confirmed it)
 
 ### 2.1 Holds — reasons to wait, never to cancel
@@ -88,6 +103,7 @@ A hold delays the ENTER message and is reported with its reason. The setup stays
 | `DATA` | quote older than 30 s, synthetic price, or a gap in the M1 series | no evidence without data |
 | `FRESH` | no closed M1 candle since the touch | the first tick into a zone is not evidence |
 | `REACTION` | price has come less than 0.50 × ATR off the extreme made since the touch | price sitting on the low it just made has defended nothing, whatever the patterns say |
+| `STRUCTURE` | `SHIFT` is absent — the nearest opposing demand or supply is still intact | the owner's rule: without that break there is no entry, however good the rest of the evidence looks |
 
 ## 3. Not early, not late
 

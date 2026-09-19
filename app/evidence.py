@@ -13,9 +13,26 @@ from dataclasses import dataclass, field
 from app.market import Candle, swing_high_indices, swing_low_indices
 from app.setup_model import Setup
 
-PRIMARY = ("RECLAIM", "REJECTION", "SHIFT")
-WEIGHTS = {"RECLAIM": 2, "REJECTION": 2, "SHIFT": 2, "MOMENTUM": 1, "ABSORPTION": 1}
+PRIMARY = ("RECLAIM", "REJECTION", "SHIFT", "AO_DIV", "QUASIMODO")
+WEIGHTS = {
+    "RECLAIM": 2,
+    "REJECTION": 2,
+    "SHIFT": 2,
+    "AO_DIV": 2,
+    "QUASIMODO": 2,
+    "MOMENTUM": 1,
+    "ABSORPTION": 1,
+}
 SCORE_MIN = 3
+
+# The break of the nearest opposing demand (short) or supply (long) is not one confirmation among
+# several: without it there is no entry, whatever else the market showed. Everything above is what
+# may supply the rest of the score, and any of them may stand in for any other — the owner's rule:
+# the market rarely gives the exact sign the analysis expected, but it almost always gives one.
+REQUIRED = "SHIFT"
+
+AO_FAST, AO_SLOW = 5, 34  # Awesome Oscillator: SMA5 − SMA34 of the median price
+AO_MIN_BARS = AO_SLOW + 10
 
 WINDOW_BARS = 30  # how far back from the touch evidence is read
 RECLAIM_BARS = 3
@@ -47,6 +64,7 @@ HOLD_TEXTS = {
     "SPREAD": "spread i lartë — hyrja do ta paguante spike-un",
     "KNIFE": "çmimi po bie/ngjitet me forcë përmes zonës — pa ndalesë s'ka konfirmim",
     "REACTION": "çmimi s'është larguar ende nga ekstremi — asgjë nuk u mbrojt",
+    "STRUCTURE": "demand/supply më i afërt ende i pathyer — pa këtë s'ka hyrje",
 }
 
 
@@ -197,7 +215,11 @@ def _rejection(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
 
 
 def _shift(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
-    """A close beyond the last opposing micro-swing — and the swing has to be worth breaking."""
+    """The nearest opposing demand or supply, broken — the one confirmation nothing stands in for.
+
+    A close beyond the last opposing micro-swing, and the swing has to be worth breaking. For a
+    short this is the nearest M1 demand base; for a long, the nearest supply.
+    """
     if len(bars) < 5:
         return None
     clear = scale.of(MIN_BREAK_ATR)
@@ -214,9 +236,90 @@ def _shift(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
         for bar in after:
             broke = (bar.c >= level + clear) if setup.is_long else (bar.c <= level - clear)
             if broke:
-                return Signal("SHIFT", f"struktura mikro u thye përtej {level:.2f}")
+                zone_word = "supply" if setup.is_long else "demand"
+                return Signal("SHIFT", f"{zone_word} më i afërt u thye te {level:.2f}")
         return None  # the most recent real swing is still intact
     return None
+
+
+def _ao(bars: list[Candle]) -> list[float]:
+    """Awesome Oscillator over the median price, aligned to `bars[AO_SLOW - 1:]`."""
+    if len(bars) < AO_SLOW:
+        return []
+    medians = [(bar.h + bar.l) / 2 for bar in bars]
+    out = []
+    for i in range(AO_SLOW - 1, len(medians)):
+        fast = sum(medians[i - AO_FAST + 1 : i + 1]) / AO_FAST
+        slow = sum(medians[i - AO_SLOW + 1 : i + 1]) / AO_SLOW
+        out.append(fast - slow)
+    return out
+
+
+def _ao_divergence(setup: Setup, series: list[Candle], scale: Scale) -> Signal | None:
+    """Price made a new extreme and the oscillator did not: the push had nothing behind it.
+
+    Read on the full M1 series, not the window since the touch — the oscillator needs 34 bars of
+    history before it means anything, and the divergence usually forms before price reaches a zone.
+    """
+    values = _ao(series)
+    if len(values) < 6:
+        return None
+    aligned = series[len(series) - len(values) :]
+    indices = swing_low_indices(aligned) if setup.is_long else swing_high_indices(aligned)
+    if len(indices) < 2:
+        return None
+    first, second = indices[-2], indices[-1]
+    clear = scale.of(MIN_BREAK_ATR)
+    if setup.is_long:
+        if aligned[second].l <= aligned[first].l - clear and values[second] > values[first]:
+            return Signal("AO_DIV", f"minimum më i ulët te {aligned[second].l:.2f}, AO jo — divergjencë blerjeje")
+    elif aligned[second].h >= aligned[first].h + clear and values[second] < values[first]:
+        return Signal("AO_DIV", f"maksimum më i lartë te {aligned[second].h:.2f}, AO jo — divergjencë shitjeje")
+    return None
+
+
+def _quasimodo(setup: Setup, series: list[Candle], scale: Scale) -> Signal | None:
+    """Left shoulder, a higher head, the neckline broken, and price back at the shoulder.
+
+    The confirmation that needs no oscillator: the head takes the liquidity above the shoulder, the
+    break below the neckline says who won, and the return to the shoulder is where the entry lives.
+    """
+    if len(series) < 8:
+        return None
+    clear = scale.of(MIN_BREAK_ATR)
+    indices = swing_low_indices(series) if setup.is_long else swing_high_indices(series)
+    if len(indices) < 2:
+        return None
+    shoulder_i, head_i = indices[-2], indices[-1]
+    between = series[shoulder_i : head_i + 1]
+    after = series[head_i + 1 :]
+    if not between or not after:
+        return None
+    if setup.is_long:
+        shoulder, head = series[shoulder_i].l, series[head_i].l
+        if head > shoulder - clear:
+            return None  # no lower head: this is not a quasimodo
+        neckline = max(bar.h for bar in between)
+        broke = [i for i, bar in enumerate(after) if bar.c >= neckline + clear]
+        if not broke:
+            return None
+        # The right shoulder is a return that happens AFTER the neckline gave way. A dip back to
+        # the shoulder level before the break is just the pattern still forming.
+        right = after[broke[0] + 1 :]
+        back_at_shoulder = any(bar.l <= shoulder + clear for bar in right)
+    else:
+        shoulder, head = series[shoulder_i].h, series[head_i].h
+        if head < shoulder + clear:
+            return None
+        neckline = min(bar.l for bar in between)
+        broke = [i for i, bar in enumerate(after) if bar.c <= neckline - clear]
+        if not broke:
+            return None
+        right = after[broke[0] + 1 :]
+        back_at_shoulder = any(bar.h >= shoulder - clear for bar in right)
+    if not back_at_shoulder:
+        return None
+    return Signal("QUASIMODO", f"quasimodo: koka mori {shoulder:.2f}, qafa u thye te {neckline:.2f}")
 
 
 def _momentum(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
@@ -322,20 +425,28 @@ def evaluate(setup: Setup, ctx, touch_ts: float) -> Verdict:
     extreme = extreme_since(setup, bars, setup.zone_low if setup.is_long else setup.zone_high)
     signals: list[Signal] = []
     if scale.usable:
+        series = ctx.candles("M1")[-AO_MIN_BARS:]
         signals = [
             signal
             for signal in (
                 _reclaim(setup, bars, scale),
                 _rejection(setup, bars, scale),
                 _shift(setup, bars, scale),
+                _ao_divergence(setup, series, scale),
+                _quasimodo(setup, series, scale),
                 _momentum(setup, bars, scale),
                 _absorption(setup, bars, scale),
             )
             if signal is not None
         ]
+    holds = holds_for(setup, ctx, bars, scale, extreme, price)
+    if scale.usable and REQUIRED not in [signal.code for signal in signals]:
+        # Everything else may stand in for everything else. This one may not: the owner's rule is
+        # that the nearest demand or supply has to give way before any entry exists.
+        holds.append("STRUCTURE")
     return Verdict(
         signals=signals,
-        holds=holds_for(setup, ctx, bars, scale, extreme, price),
+        holds=holds,
         extreme=extreme,
         advance_r=advance_r(setup, price, setup.risk),
         bars=len(bars),

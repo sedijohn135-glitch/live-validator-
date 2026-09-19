@@ -27,10 +27,18 @@ def plan_of(feed: Feed, setup_id: str) -> dict:
 
 
 def confirm_long(feed: Feed) -> None:
-    """A sweep-and-reclaim plus a strong body: the balance the validator asks for."""
+    """A sweep-and-reclaim, a strong body, and the nearest supply broken.
+
+    The break is not one confirmation among several — it is the one the validator will not enter
+    without, so the tape that confirms has to contain it.
+    """
     feed.tape.sweep(low=4291.0, close=4298.0)
     atr = feed.tape.context().atr("M1") or 1.0
-    feed.tape.push(4298.0, 4298.0 + 2 * atr, 4297.8, 4298.0 + 1.8 * atr)
+    peak = 4298.0 + 2 * atr
+    feed.tape.push(4298.0, peak, 4297.8, 4298.0 + 1.8 * atr)  # the swing high that becomes supply
+    dip = peak - 1.4 * atr
+    feed.tape.push(4298.0 + 1.8 * atr, peak - 0.1 * atr, dip, dip + 0.1 * atr)  # pullback off it
+    feed.tape.push(dip + 0.1 * atr, peak + 0.8 * atr, dip, peak + 0.6 * atr)  # closes through it
 
 
 def test_every_setup_is_registered_whatever_it_looks_like(tmp_path):

@@ -124,7 +124,11 @@ def confirmed_tape() -> tuple[Tape, float]:
     touch = tape.now
     tape.sweep(low=4291.0, close=4298.0)
     atr = tape.context().atr("M1") or 1.0
-    tape.push(4298.0, 4298.0 + 2 * atr, 4297.8, 4298.0 + 1.8 * atr)
+    peak = 4298.0 + 2 * atr
+    tape.push(4298.0, peak, 4297.8, 4298.0 + 1.8 * atr)  # the swing high that becomes supply
+    dip = peak - 1.4 * atr
+    tape.push(4298.0 + 1.8 * atr, peak - 0.1 * atr, dip, dip + 0.1 * atr)  # the pullback
+    tape.push(dip + 0.1 * atr, peak + 0.8 * atr, dip, peak + 0.6 * atr)  # the nearest supply breaks
     return tape, touch
 
 
