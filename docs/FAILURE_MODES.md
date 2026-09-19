@@ -38,6 +38,7 @@ that is actually in the code and the test that proves it.
 | G12 | Fixed candle counts, compact arrays, 15-second cache | `test_tools.py::test_snapshot_is_compact_and_new_york_timed` (< 60 KB) |
 | G13 | `/mcp` is the exact documented URL | `test_app.py::test_mcp_path_without_trailing_slash_is_the_endpoint` |
 | G14 | Background tasks start from the lifespan, once | `test_app.py::test_background_tasks_start_once_across_many_requests` |
+| G15 | Spark freezes mid-analysis in Brave: its shields cut the streamed response. Not a server fault — the browser is documented instead | `docs/SETUP_SQ.md` step 8 and the troubleshooting table |
 
 ## cTrader data
 

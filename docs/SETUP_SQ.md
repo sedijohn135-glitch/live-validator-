@@ -59,6 +59,9 @@ Botit: `/selftest` → të gjitha rreshtat ✅. Nëse diçka është ❌, lexo r
 
 ## 8) Lidh Gemini
 1. Hap **gemini.google.com** në browser (nëse s'shfaqet opsioni, zgjidh "Desktop site").
+   **Browser-i ka rëndësi:** Opera dhe Chrome punojnë rrjedhshëm. Brave e ngrin Spark-un në mes
+   të analizës (Shields e ndërpret rrjedhën e mendimeve) — ose përdor Opera/Chrome, ose fik
+   Shields për `gemini.google.com`.
 2. **Settings → Connected Apps → Custom apps for Spark → Add**.
 3. **MCP Server URL**: `https://<domeni-yt>.up.railway.app/mcp` (me `/mcp` në fund, pa `/` pas tij).
 4. **Client ID** dhe **Client secret** (te "Additional settings") **lëri bosh**.
@@ -93,3 +96,4 @@ kush vendos momentin e hyrjes.
 | 🔑 token skadoi | cTrader Web → Remote MCP → `/ctrader …` |
 | S'vjen asnjë mesazh | `/start` te boti; `TELEGRAM_CHAT_ID` i saktë; `/selftest` |
 | Çmimi te mesazhi ndryshon nga aplikacioni yt | po tregton te broker/platformë tjetër; përdor IC Markets |
+| Spark ngrin gjatë analizës, pa gabim | browser-i: Brave e bllokon rrjedhën; përdor Opera ose Chrome, ose fik Shields për `gemini.google.com` |
