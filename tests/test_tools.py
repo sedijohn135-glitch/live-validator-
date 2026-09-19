@@ -74,6 +74,21 @@ def test_every_tool_schema_is_flat(tmp_path):
             assert name in schema["properties"]
 
 
+def test_no_enum_ever_advertises_an_empty_value(tmp_path):
+    """Gemini rejects an enum containing "", and a rejected declaration fails the whole app.
+
+    The symptom is brutal and gives no clue: every Spark task dies at "Thinking it through…" the
+    moment the app is synced. Optional means a plain string with a default, never an enum member.
+    """
+    server, *_ = scenario_app(tmp_path)
+    for tool in tools_of(server):
+        for name, prop in tool.input_schema.get("properties", {}).items():
+            values = prop.get("enum")
+            if values is None:
+                continue
+            assert all(isinstance(v, str) and v.strip() for v in values), f"{tool.name}.{name}: {values}"
+
+
 def test_every_tool_is_advertised_as_a_read_so_gemini_never_asks_to_confirm(tmp_path):
     """Deviation D14: a confirmation tap per analysis is what the owner asked us to remove."""
     server, *_ = scenario_app(tmp_path)

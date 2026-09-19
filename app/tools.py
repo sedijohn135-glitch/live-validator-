@@ -151,8 +151,10 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         entry: Annotated[float, Field(description="Single entry price, or 0 when a zone is given")] = 0.0,
         entry_low: Annotated[float, Field(description="Lower edge of the entry zone")] = 0.0,
         entry_high: Annotated[float, Field(description="Upper edge of the entry zone")] = 0.0,
+        # A plain string, never an enum: an enum carrying "" as a member is rejected by Gemini's
+        # function calling, and a rejected declaration fails the whole app, not just this tool.
         direction: Annotated[
-            Literal["", "LONG", "SHORT"], Field(description="Optional: inferred from the stop when omitted")
+            str, Field(description="Optional: LONG or SHORT. Leave empty to infer it from the stop")
         ] = "",
         tp1: Annotated[float, Field(description="First target, omit for 1R/2R/3R defaults")] = 0.0,
         tp2: Annotated[float, Field(description="Second target, omit if unused")] = 0.0,
