@@ -499,6 +499,50 @@ def test_a_transient_transport_error_is_retried_once(tmp_path):
     with_client(tmp_path, body)
 
 
+def test_a_blank_http_error_is_retried_instead_of_pausing_the_monitor(tmp_path):
+    """The owner's outage, verbatim: "cTrader: Server returned an error response".
+
+    The SDK reports any non-2xx status with that one sentence — no code, no body. It matched nothing
+    in the transient list, so one bad gateway read as a verdict on the request and every entry was
+    paused until somebody read the Telegram message.
+    """
+    slept: list[float] = []
+
+    async def record(seconds):
+        slept.append(seconds)
+
+    async def body(client, fake, _store):
+        client._sleep = record
+        fake.fail_next = RuntimeError("Server returned an error response")
+        connects = len([c for c in fake.calls if c[0] == "__connect__"])
+        assert await client.call("get_version"), "the retry did not deliver a result"
+        assert client.status == "ok"
+        assert slept == [0.25], "a blip is backed off, not reconnected"
+        assert len([c for c in fake.calls if c[0] == "__connect__"]) == connects
+
+    with_client(tmp_path, body)
+
+
+def test_a_transient_error_that_never_clears_still_gives_up(tmp_path):
+    """Retrying is a cushion, not a loop: three attempts, then the outage is real and reported."""
+    slept: list[float] = []
+
+    async def record(seconds):
+        slept.append(seconds)
+
+    async def body(client, fake, _store):
+        client._sleep = record
+        fake.fail_every_call = RuntimeError("Server returned an error response")
+        before = len([c for c in fake.calls if c[0] == "get_version"])
+        with pytest.raises(DataError):
+            await client.call("get_version")
+        assert len([c for c in fake.calls if c[0] == "get_version"]) - before == 3
+        assert slept == [0.25, 0.75]
+        assert client.status == "down"
+
+    with_client(tmp_path, body)
+
+
 def test_a_verdict_on_the_request_is_not_retried(tmp_path):
     """502 UNKNOWN_SYMBOL and -32602 are answers, not hiccups: retrying only burns rate limit."""
 

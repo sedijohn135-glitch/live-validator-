@@ -42,6 +42,7 @@ class FakeCTrader:
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     trading_calls: list[str] = field(default_factory=list)
     fail_next: Exception | None = None
+    fail_every_call: Exception | None = None  # keeps failing, for "does it give up?" tests
     bid_raw: int = 5654520  # pipettes, 3 digits ⇒ 5654.52
     ask_raw: int = 5654770
     bar_base: int = 5650000
@@ -166,6 +167,8 @@ class FakeCTrader:
 
     def _maybe_fail(self) -> None:
         """Remote failures arrive as error results carrying the server's text, not as crashes."""
+        if self.fail_every_call is not None:
+            raise ToolError(str(self.fail_every_call))
         if self.fail_next is not None:
             error, self.fail_next = self.fail_next, None
             raise ToolError(str(error))

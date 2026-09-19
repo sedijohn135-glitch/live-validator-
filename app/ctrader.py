@@ -87,24 +87,42 @@ TOKEN_KEYS = ("authorization", "token", "bearer", "access_token", "accesstoken",
 # A streamable-HTTP session dies on its own (idle, a proxy hop, a server restart) and the protocol
 # answers "Session not found" / 404: the client is then required to open a new one. Without this the
 # dead session id was reused for hours and every call failed until the container happened to restart.
-TRANSIENT_PATTERN = re.compile(
-    r"unreachable|internal_error|internal error|timeout|timed out|connection|reset|closed|"
-    r"broken pipe|503|504|-32603|"
+SESSION_PATTERN = re.compile(
     r"session[^.\n]{0,20}(?:not found|unknown|terminated|invalid)|"
-    r"(?:no|invalid|unknown|missing)[^.\n]{0,20}session|re-?initiali[sz]e|\b404\b",
+    r"(?:no|invalid|unknown|missing)[^.\n]{0,20}session|re-?initiali[sz]e|\b404\b|\b401\b|\b403\b",
     re.IGNORECASE,
 )
+# A hiccup at the transport, not an answer about the request. The generic wordings matter as much as
+# the codes: the SDK reports any non-2xx status as "Server returned an error response", with no code
+# and no body, and treating that as a verdict paused the whole monitor until someone noticed.
+TRANSIENT_PATTERN = re.compile(
+    r"unreachable|internal_error|internal error|timeout|timed out|connection|reset|closed|"
+    r"broken pipe|-32603|server returned an error|error response|bad gateway|"
+    r"service unavailable|gateway time-?out|temporar|\b(?:408|429|500|502|503|504)\b|"
+    + SESSION_PATTERN.pattern,
+    re.IGNORECASE,
+)
+CALL_ATTEMPTS = 3  # the call itself, then two retries: a blip must not become an outage
+RETRY_BACKOFF_S = (0.25, 0.75)
 # cTrader answers an unknown symbol with 502 and an invalid argument with -32602: both are verdicts
 # on the request, and retrying them only burns rate limit.
 PERMANENT_PATTERN = re.compile(r"unknown_symbol|unknown symbol|-32602|invalid arguments", re.IGNORECASE)
 
 
 def is_transient(error: BaseException) -> bool:
-    """A transport hiccup worth one reconnect, as opposed to a verdict on the request."""
+    """A transport hiccup worth retrying, as opposed to a verdict on the request."""
     text = str(error)
     if PERMANENT_PATTERN.search(text):
         return False
     return bool(TRANSIENT_PATTERN.search(text))
+
+
+def is_session_error(error: BaseException) -> bool:
+    """The session itself is gone: retrying on it is pointless, a new one has to be opened."""
+    text = str(error)
+    if PERMANENT_PATTERN.search(text):
+        return False
+    return bool(SESSION_PATTERN.search(text))
 
 
 class ForbiddenTool(Exception):
@@ -332,6 +350,7 @@ class CTraderClient:
     _client: Any = None
     _stack: contextlib.AsyncExitStack | None = None
     _backoff: tuple[float, ...] = (1.0, 2.0, 5.0, 10.0, 30.0)
+    _sleep: Callable[[float], Any] = staticmethod(asyncio.sleep)
 
     # ------------------------------------------------------------- connection
     def load_credentials(self) -> Credentials | None:
@@ -397,17 +416,25 @@ class CTraderClient:
         """The only way out to cTrader. Anything outside the allowlist is refused here."""
         if tool not in ALLOWED_TOOLS:
             raise ForbiddenTool(f"tool '{tool}' is not read-only and can never be called")
-        try:
-            return await self._call_once(tool, args)
-        except AuthError:
-            raise
-        except DataError as exc:
-            if not is_transient(exc):
+        for attempt in range(CALL_ATTEMPTS):
+            try:
+                return await self._call_once(tool, args)
+            except AuthError:
                 raise
-            # Railway drops idle upstream sockets; one reconnect is cheaper than an outage.
-            logger.info("reconnecting after a transient cTrader error: %s", exc)
-            await self.reconnect()
-            return await self._call_once(tool, args)
+            except DataError as exc:
+                if not is_transient(exc) or attempt == CALL_ATTEMPTS - 1:
+                    raise
+                if is_session_error(exc):
+                    # Railway drops idle upstream sockets, and a dead session never recovers on its
+                    # own: only a new one will do.
+                    logger.info("reconnecting after a dead cTrader session: %s", exc)
+                    await self.reconnect()
+                else:
+                    # A bad gateway, a rate limit, a blank 5xx: the session is fine, the moment was
+                    # not. Backing off beats declaring an outage the owner has to read about.
+                    logger.info("retrying a transient cTrader error: %s", exc)
+                    await self._sleep(RETRY_BACKOFF_S[attempt])
+        raise DataError("cTrader nuk u përgjigj")  # pragma: no cover - the loop always returns or raises
 
     async def _call_once(self, tool: str, args: dict[str, Any] | None = None) -> Any:
         await self.connect()

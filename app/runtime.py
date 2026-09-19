@@ -128,6 +128,8 @@ class Runtime:
         self.holder = secrets.token_hex(8)
         self.has_lease = False
         self._backfill_after_outage = False
+        self._down_since = 0.0
+        self._outage_announced = False
         self.data_status = "not_configured"
         self.data_error = ""
         self.last_quote_at = 0.0
@@ -296,13 +298,21 @@ class Runtime:
 
     def _on_data_error(self, exc: Exception) -> None:
         now = self.clock()
+        if self.data_status != "down":
+            self._down_since = now
         self.data_status = "down"
         self.data_error = str(exc)[:200]
         market_open = any(is_market_open(s, from_epoch(now)) for s in self.settings.symbols)
         if not market_open:
             return
+        # The message says monitoring is paused, so it may not go out before that is true: entries
+        # only stop once the quote is older than OUTAGE_PAUSE_S. A blip the retries absorb is not an
+        # outage, and announcing it as one taught the owner to distrust the alert.
+        if now - self._down_since < OUTAGE_PAUSE_S:
+            return
         if now - self._last_outage_alert >= max(3600.0, self.settings.profile.data_outage_alert_s):
             self._last_outage_alert = now
+            self._outage_announced = True
             self.store.queue_message(
                 f"sys:data_down:{int(now // 3600)}",
                 self.settings.telegram_chat_id,
@@ -334,7 +344,11 @@ class Runtime:
             self._last_auth_alert = 0.0  # a token that dies again right after a fix must alert again
         self.data_status = "ok"
         self.data_error = ""
-        if was_down:
+        self._down_since = 0.0
+        announced, self._outage_announced = self._outage_announced, False
+        if was_down and announced:
+            # Only answer an outage the owner was told about. Three "the data is back" in four
+            # minutes, with no "the data is down" between them, is noise that says nothing.
             self.store.queue_message(
                 f"sys:restored:{int(self.clock())}",
                 self.settings.telegram_chat_id,

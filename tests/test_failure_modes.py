@@ -218,3 +218,31 @@ def test_the_feed_returning_refills_the_period_it_was_blind_for(tmp_path):
     assert windows, "M1 must be refetched when the feed returns"
     assert max(windows) >= 3600_000, f"the blind period must be refetched, widest window {windows}"
     assert runtime._backfill_after_outage is False, "the backfill runs once, not on every tick"
+
+
+def test_a_blip_is_not_announced_as_an_outage(tmp_path):
+    """Three "the data is back" in four minutes, with no "the data is down" between them.
+
+    The alert claims monitoring is paused, but entries only stop once the quote is older than
+    OUTAGE_PAUSE_S. Announcing anything shorter trains the owner to ignore the one message that
+    should mean something.
+    """
+    runtime, _ctrader, _telegram = make_runtime(tmp_path)
+    clock = {"now": 1_800_000_000.0}
+    runtime.clock = lambda: clock["now"]
+
+    runtime._on_data_error(RuntimeError("Server returned an error response"))
+    clock["now"] += 2.0
+    runtime._on_data_error(RuntimeError("Server returned an error response"))
+    runtime._on_data_ok()
+    assert runtime.store.outbox_health()["pending"] == 0, "a two-second blip says nothing"
+
+    runtime._on_data_error(RuntimeError("Server returned an error response"))
+    clock["now"] += 120.0
+    runtime._on_data_error(RuntimeError("Server returned an error response"))
+    texts = [row["text"] for row in runtime.store.pending_messages(10)]
+    assert any("TË DHËNAT RANË" in text for text in texts), texts
+
+    runtime._on_data_ok()
+    texts = [row["text"] for row in runtime.store.pending_messages(10)]
+    assert any("Të dhënat u rikthyen" in text for text in texts), "an announced outage gets an answer"
