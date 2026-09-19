@@ -13,7 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from app.evidence import LATE_ADVANCE_R, PRIMARY, REQUIRED, SCORE_MIN, WEIGHTS
+from app.evidence import BREAK_TIMEFRAMES, CORE, LATE_ADVANCE_R, STRENGTH_TEXT, WEIGHTS
 from app.runtime import Runtime
 
 REQUIRED_FIELDS = ("symbol", "stop_loss", "entry (or entry_low + entry_high)")
@@ -110,22 +110,32 @@ def register(server: MCPServer, runtime: Runtime) -> None:
                     "entry touch, then protects the profit."
                 ),
                 "entry": {
-                    "score_min": SCORE_MIN,
-                    "primary_required": True,
-                    "required": REQUIRED,
-                    "required_means": (
-                        "the nearest opposing demand (short) or supply (long) must break on M1; "
-                        "without it there is no entry, whatever else confirmed"
+                    "confirmations": list(CORE),
+                    "rule": "any one of the three is an entry; two is stronger, three is strongest",
+                    "strength": {str(n): text for n, text in STRENGTH_TEXT.items()},
+                    "zone_break_timeframes": list(BREAK_TIMEFRAMES),
+                    "zone_break_means": (
+                        "the nearest opposing demand (short) or supply (long) gives way; the nearest "
+                        "zone can live on any of M1, M5 or M15, so all three are read"
+                    ),
+                    "ao_div_means": (
+                        "Awesome Oscillator divergence, SMA5 - SMA34 of the median price: price made "
+                        "a new extreme past the previous swing and the oscillator did not follow"
+                    ),
+                    "quasimodo_means": (
+                        "left shoulder, a head beyond it, an M1 close through the neckline, then "
+                        "price back at the shoulder - the return must come after the break"
+                    ),
+                    "supporting_signals": ["RECLAIM", "REJECTION", "MOMENTUM", "ABSORPTION"],
+                    "substitution": (
+                        "the analysis names the signs its model usually shows, but the market gives "
+                        "what it gives: any confirmation stands in for any other, and the engine "
+                        "counts what actually appeared rather than waiting for what was predicted"
                     ),
                     "signals": WEIGHTS,
-                    "primary_signals": list(PRIMARY),
-                    "substitution": (
-                        "any signal may stand in for any other: the market rarely gives the exact "
-                        "sign the analysis expected, so the engine counts what actually appeared"
-                    ),
                     "late_advance_r": LATE_ADVANCE_R,
                 },
-                "holds_never_reject": ["SPREAD", "KNIFE", "DATA", "FRESH", "REACTION", "STRUCTURE"],
+                "holds_never_reject": ["SPREAD", "KNIFE", "DATA", "FRESH", "REACTION"],
                 "cancellations": [
                     "stop touched before the entry was touched",
                     "TP1 touched before the entry was touched",

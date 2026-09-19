@@ -71,11 +71,23 @@ def _targets_line(targets: list[float], rr: list[float], decimals: int) -> str:
 
 
 def _evidence_lines(data: dict[str, Any]) -> list[str]:
+    """What confirmed, how strong it is, and which of the three actually appeared.
+
+    The strength is the headline: the owner reads 2/3 and knows two independent confirmations landed
+    on the same zone, whichever two they happened to be.
+    """
     signals = data.get("signals") or []
     if not signals:
         return []
-    codes = " + ".join(esc(code) for code, _detail in signals)
-    lines = [f"Evidenca: {codes} ({data.get('score', 0)} pikë)"]
+    core = data.get("core") or []
+    strength = data.get("strength", len(core))
+    lines = []
+    if strength:
+        lines.append(f"Konfirmimi: <b>{strength}/3</b> — {esc(data.get('strength_text', ''))}")
+        lines.append("  " + " + ".join(esc(code) for code in core))
+    other = [code for code, _detail in signals if code not in core]
+    if other:
+        lines.append("Mbështetje: " + " + ".join(esc(code) for code in other))
     lines += [f"  • {esc(detail)}" for _code, detail in signals]
     return lines
 

@@ -129,15 +129,12 @@ def test_validator_rules_describes_the_evidence_not_a_strategy(tmp_path):
     server, *_ = scenario_app(tmp_path)
     payload = call(server, "validator_rules", {})
     assert payload["schema"] == "rules/2"
-    assert payload["entry"]["score_min"] == 3
-    assert set(payload["entry"]["primary_signals"]) == {
-        "RECLAIM",
-        "REJECTION",
-        "SHIFT",
-        "AO_DIV",
-        "QUASIMODO",
-    }
-    assert payload["entry"]["required"] == "SHIFT", "the demand/supply break is not optional"
+    entry = payload["entry"]
+    assert entry["confirmations"] == ["ZONE_BREAK", "AO_DIV", "QUASIMODO"]
+    assert "any one of the three" in entry["rule"]
+    assert entry["strength"] == {"1": "konfirmim", "2": "konfirmim i fortë", "3": "konfirmim shumë i fortë"}
+    assert entry["zone_break_timeframes"] == ["M1", "M5", "M15"], "the nearest zone can live on any"
+    assert "stands in for any other" in entry["substitution"]
     assert len(payload["cancellations"]) == 2
     assert "never rejects" in payload["principle"]
 

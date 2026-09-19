@@ -13,23 +13,27 @@ from dataclasses import dataclass, field
 from app.market import Candle, swing_high_indices, swing_low_indices
 from app.setup_model import Setup
 
-PRIMARY = ("RECLAIM", "REJECTION", "SHIFT", "AO_DIV", "QUASIMODO")
+# The owner's three confirmations. They are equals: any one of them is an entry, and each extra one
+# makes the same entry stronger. Nothing here is a checklist — the analysis names the signs a model
+# usually shows, but the market gives what it gives, and the engine counts what actually appeared.
+CORE = ("ZONE_BREAK", "AO_DIV", "QUASIMODO")
+STRENGTH_TEXT = {1: "konfirmim", 2: "konfirmim i fortë", 3: "konfirmim shumë i fortë"}
+
+# Supporting evidence: never enough on its own, always worth reporting alongside a core signal.
+PRIMARY = CORE
 WEIGHTS = {
-    "RECLAIM": 2,
-    "REJECTION": 2,
-    "SHIFT": 2,
+    "ZONE_BREAK": 2,
     "AO_DIV": 2,
     "QUASIMODO": 2,
+    "RECLAIM": 1,
+    "REJECTION": 1,
     "MOMENTUM": 1,
     "ABSORPTION": 1,
 }
-SCORE_MIN = 3
+SCORE_MIN = 2  # one core confirmation; the score is reported, the strength is what decides
 
-# The break of the nearest opposing demand (short) or supply (long) is not one confirmation among
-# several: without it there is no entry, whatever else the market showed. Everything above is what
-# may supply the rest of the score, and any of them may stand in for any other — the owner's rule:
-# the market rarely gives the exact sign the analysis expected, but it almost always gives one.
-REQUIRED = "SHIFT"
+BREAK_TIMEFRAMES = ("M1", "M5", "M15")  # the nearest demand/supply can live on any of them
+BREAK_BARS = 60
 
 AO_FAST, AO_SLOW = 5, 34  # Awesome Oscillator: SMA5 − SMA34 of the median price
 AO_MIN_BARS = AO_SLOW + 10
@@ -64,7 +68,7 @@ HOLD_TEXTS = {
     "SPREAD": "spread i lartë — hyrja do ta paguante spike-un",
     "KNIFE": "çmimi po bie/ngjitet me forcë përmes zonës — pa ndalesë s'ka konfirmim",
     "REACTION": "çmimi s'është larguar ende nga ekstremi — asgjë nuk u mbrojt",
-    "STRUCTURE": "demand/supply më i afërt ende i pathyer — pa këtë s'ka hyrje",
+    "CONFIRMATION": "asnjë nga tri konfirmimet: thyerje demand/supply, divergjencë AO, quasimodo",
 }
 
 
@@ -115,8 +119,22 @@ class Verdict:
         return any(s.is_primary for s in self.signals)
 
     @property
+    def core(self) -> list[str]:
+        """Which of the owner's three confirmations actually appeared."""
+        return [s.code for s in self.signals if s.code in CORE]
+
+    @property
+    def strength(self) -> int:
+        """1 is an entry, 2 is stronger, 3 is as strong as this engine can read."""
+        return len(self.core)
+
+    @property
+    def strength_text(self) -> str:
+        return STRENGTH_TEXT.get(self.strength, "pa konfirmim")
+
+    @property
     def confirmed(self) -> bool:
-        return self.score >= SCORE_MIN and self.has_primary
+        return self.strength >= 1
 
     @property
     def ready(self) -> bool:
@@ -214,12 +232,8 @@ def _rejection(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
     return None
 
 
-def _shift(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
-    """The nearest opposing demand or supply, broken — the one confirmation nothing stands in for.
-
-    A close beyond the last opposing micro-swing, and the swing has to be worth breaking. For a
-    short this is the nearest M1 demand base; for a long, the nearest supply.
-    """
+def _break_on(setup: Setup, bars: list[Candle], scale: Scale) -> float | None:
+    """The level of the nearest opposing zone broken on this series, or None if it still holds."""
     if len(bars) < 5:
         return None
     clear = scale.of(MIN_BREAK_ATR)
@@ -234,12 +248,32 @@ def _shift(setup: Setup, bars: list[Candle], scale: Scale) -> Signal | None:
         if abs(level - base) < height_needed:
             return None  # the most recent structure is noise, not a level anyone defends
         for bar in after:
-            broke = (bar.c >= level + clear) if setup.is_long else (bar.c <= level - clear)
-            if broke:
-                zone_word = "supply" if setup.is_long else "demand"
-                return Signal("SHIFT", f"{zone_word} më i afërt u thye te {level:.2f}")
+            if (bar.c >= level + clear) if setup.is_long else (bar.c <= level - clear):
+                return level
         return None  # the most recent real swing is still intact
     return None
+
+
+def _zone_break(setup: Setup, ctx, scale: Scale) -> Signal | None:
+    """The nearest opposing demand (short) or supply (long), broken.
+
+    Read on M1, M5 and M15, because the nearest zone can live on any of them: a short into an M15
+    supply is confirmed by the M15 demand giving way, and looking only at M1 would miss it. When
+    more than one timeframe has broken, the one whose level sits nearest the entry zone is reported
+    — that is the zone price actually had to get through.
+    """
+    found: list[tuple[float, str, float]] = []
+    for timeframe in BREAK_TIMEFRAMES:
+        level = _break_on(setup, ctx.candles(timeframe)[-BREAK_BARS:], scale)
+        if level is not None:
+            found.append((abs(level - setup.zone_mid), timeframe, level))
+    if not found:
+        return None
+    _distance, timeframe, level = min(found)
+    zone_word = "supply" if setup.is_long else "demand"
+    others = len(found) - 1
+    extra = f" (+{others} tjetër)" if others == 1 else f" (+{others} të tjera)" if others else ""
+    return Signal("ZONE_BREAK", f"{zone_word} {timeframe} më i afërt u thye te {level:.2f}{extra}")
 
 
 def _ao(bars: list[Candle]) -> list[float]:
@@ -429,21 +463,17 @@ def evaluate(setup: Setup, ctx, touch_ts: float) -> Verdict:
         signals = [
             signal
             for signal in (
-                _reclaim(setup, bars, scale),
-                _rejection(setup, bars, scale),
-                _shift(setup, bars, scale),
+                _zone_break(setup, ctx, scale),
                 _ao_divergence(setup, series, scale),
                 _quasimodo(setup, series, scale),
+                _reclaim(setup, bars, scale),
+                _rejection(setup, bars, scale),
                 _momentum(setup, bars, scale),
                 _absorption(setup, bars, scale),
             )
             if signal is not None
         ]
     holds = holds_for(setup, ctx, bars, scale, extreme, price)
-    if scale.usable and REQUIRED not in [signal.code for signal in signals]:
-        # Everything else may stand in for everything else. This one may not: the owner's rule is
-        # that the nearest demand or supply has to give way before any entry exists.
-        holds.append("STRUCTURE")
     return Verdict(
         signals=signals,
         holds=holds,

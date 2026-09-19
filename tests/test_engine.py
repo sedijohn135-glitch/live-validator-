@@ -77,7 +77,8 @@ def test_the_full_path_from_registration_to_enter_now(tmp_path):
     text = feed.last_message()
     assert "HYR TANI" in text
     assert "Siguro fitimet" in text
-    assert "Evidenca:" in text
+    assert "Konfirmimi: <b>1/3</b>" in text, "the strength is the headline"
+    assert "ZONE_BREAK" in text
 
 
 def test_a_zone_crossed_between_two_passes_still_counts_as_touched(tmp_path):

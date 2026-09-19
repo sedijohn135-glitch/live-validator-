@@ -48,14 +48,16 @@ def verdict_for(tape: Tape, setup, touch_ts: float, **ctx_kwargs):
     return evaluate(setup, tape.context(**ctx_kwargs), touch_ts)
 
 
-def test_a_sweep_and_reclaim_is_a_primary_signal():
+def test_a_sweep_and_reclaim_is_supporting_evidence_not_a_confirmation():
+    """Real evidence, and on its own still not an entry: it is none of the owner's three."""
     tape = approach()
     touch = tape.now
     tape.drift(1, step=-1.0)
     tape.sweep(low=4291.0, close=4298.0)  # liquidity taken below the zone, price back inside
     verdict = verdict_for(tape, long_setup(), touch)
     assert "RECLAIM" in verdict.codes
-    assert verdict.has_primary
+    assert verdict.core == [], "a reclaim is not one of the three"
+    assert not verdict.confirmed
 
 
 def test_a_rejection_wick_is_a_primary_signal():
@@ -66,7 +68,7 @@ def test_a_rejection_wick_is_a_primary_signal():
     assert "REJECTION" in verdict.codes
 
 
-def test_a_micro_structure_shift_is_a_primary_signal():
+def test_the_nearest_supply_broken_is_a_confirmation():
     tape = approach()
     touch = tape.now
     tape.drift(3, step=-0.3)
@@ -74,7 +76,7 @@ def test_a_micro_structure_shift_is_a_primary_signal():
     tape.drift(2, step=-0.4)
     tape.push(4295.0, 4299.0, 4294.8, 4298.5)  # and is closed through
     verdict = verdict_for(tape, long_setup(), touch)
-    assert "SHIFT" in verdict.codes
+    assert "ZONE_BREAK" in verdict.codes
 
 
 def test_momentum_and_absorption_alone_never_confirm():
@@ -119,7 +121,7 @@ def test_a_wide_spread_holds_the_entry_without_killing_the_setup():
     verdict = verdict_for(tape, long_setup(), touch, spread=9.0, median=0.2)
     assert "SPREAD" in verdict.holds
     assert not verdict.ready
-    assert verdict.confirmed, "the evidence is still evidence — only the entry waits"
+    assert verdict.codes, "the evidence is still evidence — only the entry waits"
 
 
 def test_stale_or_synthetic_prices_hold_the_entry():
@@ -332,11 +334,12 @@ def test_the_failed_setup_never_reaches_an_entry_at_all(tmp_path):
     feed.tick(price=4392.20)  # the top of the recovery
 
     row = feed.store.get_setup(setup_id)
-    assert row["state"] == "AT_ZONE", "the nearest supply never broke: there is no entry to place"
+    assert row["state"] == "AT_ZONE", "none of the three confirmations appeared"
     assert row["triggered_at"] is None, "nothing was entered at any price"
     setup, computed = feed.engine.load_setup(setup_id)
     verdict = evaluate(setup, feed.context(feed.tape.symbol, feed.tape.now), float(computed["touch_ts"]))
-    assert "STRUCTURE" in verdict.holds, verdict.holds
+    assert verdict.core == [], verdict.codes
+    assert not verdict.confirmed
 
 
 def test_the_same_window_holds_once_price_falls_back_to_the_edge():
@@ -418,24 +421,25 @@ def test_an_ao_divergence_is_a_primary_signal():
     assert "AO_DIV" in verdict.codes, verdict.codes
 
 
-def test_the_break_of_the_nearest_demand_is_not_optional():
-    """Every other signal may stand in for every other. This one may not.
+def test_any_one_of_the_three_is_an_entry_and_each_extra_one_is_stronger():
+    """The owner's rule: 1 is an entry, 2 is stronger, 3 is as strong as this engine reads.
 
-    The owner's rule, verbatim: without the nearest demand/supply break there is no entry. So a
-    verdict rich in evidence but missing that break holds on STRUCTURE rather than entering.
+    No confirmation is mandatory and none outranks another. A sweep and an impulse are real
+    evidence, but neither is one of the three, so on their own they are not an entry. The moment
+    the nearest supply gives way, it is.
     """
     tape = approach()
     touch = tape.now
     tape.sweep(low=4291.0, close=4298.0)
     impulse(tape)
-    verdict = verdict_for(tape, long_setup(), touch)
-    assert verdict.score >= SCORE_MIN and verdict.has_primary, "the evidence is there"
-    assert "SHIFT" not in verdict.codes
-    assert "STRUCTURE" in verdict.holds
-    assert not verdict.ready, "and it is still not an entry"
+    before = verdict_for(tape, long_setup(), touch)
+    assert before.codes, "the supporting evidence is there"
+    assert before.strength == 0
+    assert not before.ready, "and it is still not an entry"
 
     break_supply(tape)
     after = verdict_for(tape, long_setup(), touch)
-    assert "SHIFT" in after.codes
-    assert "STRUCTURE" not in after.holds
-    assert after.ready
+    assert after.core == ["ZONE_BREAK"]
+    assert after.strength == 1
+    assert after.strength_text == "konfirmim"
+    assert after.ready, "one of the three is enough"
