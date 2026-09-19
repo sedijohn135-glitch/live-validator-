@@ -311,7 +311,8 @@ HELP_TEXT = (
     "/cancel ID – anulo një setup\n"
     "/pause · /resume – ndal/rifillo mesazhet HYR\n"
     "/stats 7 ose /stats 30 – statistika\n"
-    "/selftest – kontrollo lidhjet\n"
+    "/selftest – kontrollo lidhjet, botin dërgues dhe bisedën\n"
+    "/id – cila është kjo bisedë (punon edhe nga një chat tjetër)\n"
     "/ctrader KONFIGURIMI – rinovo tokenin e cTrader\n"
     "/ctrader reset – kthehu te variablat e Railway\n"
     "/revoke_all – shkëput Gemini\n"
@@ -374,6 +375,14 @@ class TelegramClient:
             await self._call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         except TelegramError as exc:
             logger.info("deleteMessage failed: %s", exc)
+
+    async def get_me(self) -> dict[str, Any]:
+        """Which bot this token actually is. A rotated token sends to a different conversation."""
+        return await self._call("getMe", {})
+
+    async def get_chat(self, chat_id: str) -> dict[str, Any]:
+        """Which conversation the messages land in. `ok` from sendMessage does not mean "you saw it"."""
+        return await self._call("getChat", {"chat_id": chat_id})
 
     async def get_updates(self, offset: int, timeout: int = 30) -> list[dict[str, Any]]:
         result = await self._call(

@@ -680,7 +680,11 @@ class Runtime:
                 )
             return
         if chat_id != owner:
-            return  # strangers are ignored silently
+            # Strangers stay ignored, except for the one question a wrong TELEGRAM_CHAT_ID makes
+            # impossible to answer: which chat am I? Without it the owner sees only silence.
+            if text.startswith("/id"):
+                await client.send_message(chat_id, "Chat ID: <b>" + tg.esc(chat_id) + "</b>")
+            return
         if text.startswith("/ctrader"):
             message_id = message.get("message_id")
             if message_id:
@@ -697,6 +701,8 @@ class Runtime:
             return "✅ Je pronari. Shkruaj /help për komandat."
         if command == "help":
             return tg.HELP_TEXT
+        if command == "id":
+            return "Chat ID: <b>" + tg.esc(self.settings.telegram_chat_id) + "</b> (ky është pronari)"
         if command == "status":
             return self._status_text()
         if command == "active":
@@ -792,6 +798,36 @@ class Runtime:
             "Anulohet vetëm nga: SL para hyrjes, ose TP1 para hyrjes."
         )
 
+    async def _telegram_destination_lines(self) -> list[str]:
+        """Which bot sends, and into which conversation.
+
+        A message the Bot API accepted is not a message the owner read: the token may belong to a
+        different bot, or the chat id to a different conversation. Both are invisible from the
+        outbox, which only records `ok`.
+        """
+        client = self._telegram_client()
+        if client is None:
+            return ["❌ Telegram: mungon TELEGRAM_BOT_TOKEN"]
+        lines = []
+        try:
+            me = await client.get_me()
+            lines.append(f"✅ Boti dërgues: @{tg.esc(me.get('username') or '?')}")
+        except Exception as exc:  # noqa: BLE001 - the report must always render
+            lines.append(f"❌ Boti dërgues: {tg.esc(str(exc)[:100])}")
+        chat_id = self.settings.telegram_chat_id
+        if not chat_id:
+            return [*lines, "❌ TELEGRAM_CHAT_ID mungon: asnjë mesazh nuk dërgohet"]
+        try:
+            chat = await client.get_chat(chat_id)
+            name = chat.get("username") or chat.get("title") or chat.get("first_name") or "?"
+            lines.append(f"✅ Biseda: {tg.esc(chat_id)} · {tg.esc(chat.get('type') or '?')} · {tg.esc(name)}")
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"❌ Biseda {tg.esc(chat_id)}: {tg.esc(str(exc)[:100])}")
+        health = self.store.outbox_health()
+        mark = "⚠️" if health["dropped"] or health["pending"] else "✅"
+        lines.append(f"{mark} Radha: {health['pending']} në pritje · {health['dropped']} të humbura")
+        return lines
+
     async def selftest(self) -> str:
         """The `/selftest` report of ctrader-remote-mcp §8, one ✅/❌ per line."""
         lines = ["<b>SELFTEST</b>"]
@@ -851,6 +887,7 @@ class Runtime:
         lines.append(
             ("✅" if self.settings.telegram_configured() else "❌") + " Telegram i konfiguruar"
         )
+        lines += await self._telegram_destination_lines()
         lines.append(("✅" if self.settings.on_volume else "⚠️") + " Volume te Railway")
         lines.append(f"✅ URL publike: {tg.esc(self.settings.public_base_url)}/mcp")
         if self.settings.mcp_open:

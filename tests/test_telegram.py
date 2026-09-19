@@ -179,6 +179,27 @@ def test_strangers_are_ignored_silently(runtime):
     assert fake.sent == []
 
 
+def test_a_stranger_may_still_ask_which_chat_this_is(runtime):
+    """A wrong TELEGRAM_CHAT_ID is otherwise undiagnosable: the owner sees only silence.
+
+    sendMessage answers `ok` for the configured chat whether or not it is the chat the owner reads,
+    so the outbox cannot tell them apart. `/id` is the one question a stranger chat may ask.
+    """
+    fake = runtime.telegram_fake
+    asyncio.run(runtime.handle_update(owner_update("/id", chat_id="999"), fake.client()))
+    assert fake.texts() == ["Chat ID: <b>999</b>"]
+    asyncio.run(runtime.handle_update(owner_update("/status", chat_id="999"), fake.client()))
+    assert len(fake.texts()) == 1, "everything else stays silent for strangers"
+
+
+def test_selftest_names_the_sending_bot_and_the_destination_chat(runtime):
+    """"Delivered" only means the API accepted it — not that it reached the owner's conversation."""
+    report = asyncio.run(runtime.selftest())
+    assert "Boti dërgues:" in report
+    assert "Biseda: 42" in report
+    assert "Radha: 0 në pritje · 0 të humbura" in report
+
+
 def test_owner_commands_answer(runtime):
     fake = runtime.telegram_fake
     for command in ("/help", "/status", "/active", "/rules", "/stats 7"):
