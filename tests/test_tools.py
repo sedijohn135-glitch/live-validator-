@@ -125,6 +125,22 @@ def test_snapshot_is_compact_and_new_york_timed(tmp_path):
     assert len(json.dumps(payload)) < 60_000  # failure mode G12
 
 
+def test_the_snapshot_carries_the_oscillator_so_the_model_never_computes_it(tmp_path):
+    """Gemini reads AO; it does not work it out.
+
+    The value is exactly determined by the candles, so the server produces it. A 34-period mean
+    reasoned out in prose is a 34-period mean reasoned out wrong, and the whole of strategy step 2
+    hangs off that number.
+    """
+    server, _runtime, tape, _tg = scenario_app(tmp_path)
+    payload = call(server, "market_snapshot", {"symbol": "XAUUSD"})
+    assert set(payload["ao"]) == {"M15", "M5"}, "the two timeframes the strategy reads"
+    for block in payload["ao"].values():
+        assert isinstance(block["values"], list)
+        assert block["divergence"] in (None, "SELL", "BUY")
+    assert len(json.dumps(payload)) < 60_000, "and it must still fit the budget"
+
+
 def test_validator_rules_describes_the_evidence_not_a_strategy(tmp_path):
     server, *_ = scenario_app(tmp_path)
     payload = call(server, "validator_rules", {})

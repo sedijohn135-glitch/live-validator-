@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.market import Candle, swing_high_indices, swing_low_indices
+from app.market import AO_SLOW, Candle, awesome_oscillator, swing_high_indices, swing_low_indices
 from app.setup_model import Setup
 
 # Step 3 of the owner's strategy, and the only thing that makes an entry: before any entry, price
@@ -40,7 +40,6 @@ SCORE_MIN = 2  # the break itself; the score is reported, the break is what deci
 BREAK_TIMEFRAMES = ("M1", "M5", "M15")  # the nearest demand/supply can live on any of them
 BREAK_BARS = 60
 
-AO_FAST, AO_SLOW = 5, 34  # Awesome Oscillator: SMA5 − SMA34 of the median price
 AO_MIN_BARS = AO_SLOW + 10
 
 WINDOW_BARS = 30  # how far back from the touch evidence is read
@@ -282,26 +281,13 @@ def _zone_break(setup: Setup, ctx, scale: Scale) -> Signal | None:
     return Signal("ZONE_BREAK", f"{zone_word} {timeframe} më i afërt u thye te {level:.2f}{extra}")
 
 
-def _ao(bars: list[Candle]) -> list[float]:
-    """Awesome Oscillator over the median price, aligned to `bars[AO_SLOW - 1:]`."""
-    if len(bars) < AO_SLOW:
-        return []
-    medians = [(bar.h + bar.l) / 2 for bar in bars]
-    out = []
-    for i in range(AO_SLOW - 1, len(medians)):
-        fast = sum(medians[i - AO_FAST + 1 : i + 1]) / AO_FAST
-        slow = sum(medians[i - AO_SLOW + 1 : i + 1]) / AO_SLOW
-        out.append(fast - slow)
-    return out
-
-
 def _ao_divergence(setup: Setup, series: list[Candle], scale: Scale) -> Signal | None:
     """Price made a new extreme and the oscillator did not: the push had nothing behind it.
 
     Read on the full M1 series, not the window since the touch — the oscillator needs 34 bars of
     history before it means anything, and the divergence usually forms before price reaches a zone.
     """
-    values = _ao(series)
+    values = awesome_oscillator(series)
     if len(values) < 6:
         return None
     aligned = series[len(series) - len(values) :]
