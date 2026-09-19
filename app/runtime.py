@@ -642,7 +642,9 @@ class Runtime:
             try:
                 client = self._telegram_client()
                 if client is not None and self.has_lease:
-                    sender = tg.OutboxSender(self.store, client, self.settings.telegram_chat_id)
+                    sender = tg.OutboxSender(
+                        self.store, client, self.settings.telegram_chat_id, source=self.settings.app_name
+                    )
                     await sender.drain_once()
             except Exception:
                 logger.exception("telegram sender failed")
@@ -716,7 +718,7 @@ class Runtime:
                 await client.delete_message(chat_id, int(message_id))
         reply = await self.run_command(text)
         if reply:
-            await client.send_message(owner, reply)
+            await client.send_message(owner, tg.tagged(self.settings.app_name, reply))
 
     async def run_command(self, text: str) -> str:
         command, _, argument = text.partition(" ")

@@ -140,6 +140,9 @@ class Settings:
     symbol_map: dict[str, str] = field(default_factory=dict)
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    # Printed at the top of every Telegram message. The owner runs more than one bot into the same
+    # Telegram, and two alerts that look alike are two alerts that get mixed up.
+    app_name: str = "Live Validator"
     owner_password: str = ""
     ctrader_config: str = ""
     ctrader_url: str = ""
@@ -261,6 +264,7 @@ def load_settings(environ: dict[str, str] | None = None) -> Settings:
             symbol_map=symbol_map,
             telegram_bot_token=_env("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
+            app_name=(_env("APP_NAME") or "Live Validator").strip()[:40],
             owner_password=password,
             ctrader_config=_env("CTRADER_MCP_CONFIG"),
             ctrader_url=_env("CTRADER_MCP_URL"),

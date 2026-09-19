@@ -63,3 +63,10 @@ def test_data_dir_resolution_and_volume_warning():
 
     path, on_volume, _ = resolve_data_dir({"DATA_DIR": "/custom", "RAILWAY_VOLUME_MOUNT_PATH": "/data"})
     assert path == "/custom" and not on_volume
+
+
+def test_the_app_name_is_configurable_and_bounded():
+    """One Telegram, several bots: each one says which it is, and the owner picks the words."""
+    assert load_settings({}).app_name == "Live Validator"
+    assert load_settings({"APP_NAME": "  Sniper XAU  "}).app_name == "Sniper XAU"
+    assert len(load_settings({"APP_NAME": "x" * 200}).app_name) == 40

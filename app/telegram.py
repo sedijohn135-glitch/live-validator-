@@ -20,6 +20,11 @@ MAX_MESSAGE = 4096
 API_BASE = "https://api.telegram.org"
 
 
+def tagged(source: str, text: str) -> str:
+    """Name the sender on the first line, so two bots in one Telegram never look alike."""
+    return f"🏷 <b>{esc(source)}</b>\n{text}" if source else text
+
+
 def esc(value: Any) -> str:
     """HTML-escape any dynamic value."""
     if value is None:
@@ -413,11 +418,14 @@ class OutboxSender:
     stopped every later alert for good — including ENTER and the cancellations.
     """
 
-    def __init__(self, store, client: TelegramClient, chat_id: str, sleep=asyncio.sleep) -> None:
+    def __init__(
+        self, store, client: TelegramClient, chat_id: str, sleep=asyncio.sleep, source: str = ""
+    ) -> None:
         self.store = store
         self.client = client
         self.chat_id = chat_id
         self._sleep = sleep
+        self.source = source
 
     async def drain_once(self) -> int:
         sent = 0
@@ -426,7 +434,7 @@ class OutboxSender:
             if not chat_id:
                 return sent
             try:
-                await self.client.send_message(chat_id, row["text"])
+                await self.client.send_message(chat_id, tagged(self.source, row["text"]))
             except TelegramError as exc:
                 if exc.retry_after:  # rate limited: the whole queue waits, in order
                     self.store.mark_failed(row["id"], exc.message)
@@ -446,7 +454,9 @@ class OutboxSender:
 
     async def _send_plain(self, chat_id: str, row) -> bool:
         try:
-            await self.client.send_message(chat_id, strip_html(row["text"]), parse_mode=None)
+            await self.client.send_message(
+                chat_id, strip_html(tagged(self.source, row["text"])), parse_mode=None
+            )
         except Exception:  # noqa: BLE001 - the plain retry is a bonus, never a new failure mode
             return False
         self.store.mark_sent(row["id"])

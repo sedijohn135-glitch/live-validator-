@@ -420,3 +420,53 @@ def test_a_delivered_message_reads_as_delivered(tmp_path):
     assert record["delivered"] is True
     assert record["dropped"] is False
     assert store.outbox_health()["dropped"] == 0
+
+
+# ------------------------------------------------------ naming the sender
+def test_every_message_names_the_app_it_came_from(tmp_path):
+    """Two bots in one Telegram, both sending alerts, is two alerts that get mixed up.
+
+    The tag goes on at send time rather than in each template, so it covers the setup cards, the
+    system alerts and the command replies alike.
+    """
+    store = Store(str(tmp_path / "v.db"))
+    store.queue_message("SET-9:registered", "42", "🎯 <b>ZONA U PREK</b>", 1.0)
+    sent = []
+
+    async def call(method, payload):
+        sent.append(payload)
+        return {"message_id": 1}
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42", source="Sniper XAU")
+    assert asyncio.run(sender.drain_once()) == 1
+    assert sent[0]["text"] == "🏷 <b>Sniper XAU</b>\n🎯 <b>ZONA U PREK</b>"
+
+
+def test_the_plain_text_retry_keeps_the_name(tmp_path):
+    """The fallback must not be the one message that arrives unlabelled."""
+    store = Store(str(tmp_path / "v.db"))
+    store.queue_message("SET-9:broken", "42", "<b>unclosed &amp; <i>markup", 1.0)
+    sent = []
+
+    async def call(method, payload):
+        sent.append(payload)
+        if payload.get("parse_mode") == "HTML":
+            raise tg.TelegramError("Bad Request: can't parse entities")
+        return {"message_id": 1}
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42", source="Sniper XAU")
+    assert asyncio.run(sender.drain_once()) == 1
+    assert sent[-1]["text"].startswith("🏷 Sniper XAU\n")
+
+
+def test_an_empty_app_name_adds_no_line(tmp_path):
+    store = Store(str(tmp_path / "v.db"))
+    store.queue_message("SET-9:plain", "42", "teksti", 1.0)
+    sent = []
+
+    async def call(method, payload):
+        sent.append(payload)
+        return {"message_id": 1}
+
+    asyncio.run(tg.OutboxSender(store, tg.TelegramClient("t", call), "42").drain_once())
+    assert sent[0]["text"] == "teksti"

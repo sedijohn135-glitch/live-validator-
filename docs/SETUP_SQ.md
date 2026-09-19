@@ -34,7 +34,12 @@ Në kanavacën e projektit: **+ Create / New → Volume** → lidhe me shërbimi
 | `TELEGRAM_CHAT_ID` | shiko hapin 5 |
 | `MCP_AUTH` | `open` — Gemini lidhet direkt nga URL-ja, pa faqe fjalëkalimi |
 | `OWNER_PASSWORD` | duhet vetëm nëse **nuk** e vendos `MCP_AUTH=open` |
+| `APP_NAME` | emri që shfaqet në krye të çdo mesazhi — p.sh. `Sniper XAU`. Pa të: `Live Validator` |
 Nuk ka më `VALIDATOR_PROFILE`: validatori universal ka një mënyrë të vetme pune.
+
+**Për `APP_NAME`:** nëse ke më shumë se një bot që të dërgon njoftime në Telegram, vendosi secilit
+një emër të ndryshëm. Çdo mesazh hapet me `🏷 <emri>`, ndaj e sheh menjëherë nga vjen setupi pa
+pasur nevojë të hapësh bisedën.
 
 **Për `MCP_AUTH`:**
 - `open` — si një server MCP i thjeshtë: ngjit URL-në te Gemini dhe mbaron. Por kushdo që e di adresën
