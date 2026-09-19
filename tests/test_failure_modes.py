@@ -186,3 +186,35 @@ def test_a_broken_environment_never_crashes_the_process(tmp_path):
     assert settings.profile.name == "UNIVERSAL"
     assert settings.warnings
     assert json.dumps(settings.warnings)  # serialisable for /health
+
+
+def test_the_feed_returning_refills_the_period_it_was_blind_for(tmp_path):
+    """The restore message says the missing period was checked; it has to be true.
+
+    Setups are judged on the range price covered since the last pass. After an outage that range
+    lives in candles nobody fetched, so three bars of routine refresh leave the hole in place.
+    """
+    runtime, ctrader, _telegram = make_runtime(tmp_path)
+
+    runtime.engine.submit({"symbol": "XAUUSD", "entry": 4300.0, "stop_loss": 4290.0, "tp1": 4330.0})
+
+    async def scenario():
+        await runtime.ctrader.discover()  # symbols resolved: the engine loop would be running
+        runtime.data_status = "down"
+        runtime._on_data_ok()
+        assert runtime._backfill_after_outage is True
+        ctrader.calls.clear()
+        try:
+            await runtime.tick()
+        finally:
+            await runtime.ctrader.aclose()
+
+    asyncio.run(scenario())
+    windows = [
+        payload["to"] - payload["from"]
+        for name, payload in ctrader.calls
+        if name == "get_trendbars" and payload["period"] == "M_1"
+    ]
+    assert windows, "M1 must be refetched when the feed returns"
+    assert max(windows) >= 3600_000, f"the blind period must be refetched, widest window {windows}"
+    assert runtime._backfill_after_outage is False, "the backfill runs once, not on every tick"

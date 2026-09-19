@@ -49,6 +49,7 @@ LEASE_HEARTBEAT_S = 10.0
 IDLE_HEARTBEAT_S = 300.0
 OUTAGE_PAUSE_S = 20.0
 RECONNECT_EVERY_S = 120.0  # while the feed is down, rebuild the link this often
+BACKFILL_CANDLES = 180  # M1 bars fetched once the feed returns: three hours of the blind period
 ENGINE_STALE_S = 60.0  # beyond this the loop is not running, whatever the feed says
 DISCOVERY_RETRY_S = 20.0  # symbols must resolve before anything can be polled; keep trying
 
@@ -126,6 +127,7 @@ class Runtime:
         self.engine = Engine(self.settings, self.store, self.make_context, clock=self.clock)
         self.holder = secrets.token_hex(8)
         self.has_lease = False
+        self._backfill_after_outage = False
         self.data_status = "not_configured"
         self.data_error = ""
         self.last_quote_at = 0.0
@@ -323,6 +325,11 @@ class Runtime:
 
     def _on_data_ok(self) -> None:
         was_down = self.data_status in ("down", "auth_error")
+        if was_down:
+            # The restore message promises the missing period was checked. Three candles do not
+            # cover an outage, and the setups are judged on the range price covered while we were
+            # blind, so that range has to be fetched before the next pass reads it.
+            self._backfill_after_outage = True
         if self.data_status == "auth_error":
             self._last_auth_alert = 0.0  # a token that dies again right after a fix must alert again
         self.data_status = "ok"
@@ -345,9 +352,13 @@ class Runtime:
         self.last_tick_at = now
         await self._heal_connection(now)
         await self.refresh_quotes()
+        backfill, self._backfill_after_outage = self._backfill_after_outage, False
         for symbol in self.settings.symbols:
             if not self._is_watched(symbol):
                 continue
+            if backfill:
+                with contextlib.suppress(Exception):
+                    await self.refresh_candles(symbol, ["M1", "M5"], count=BACKFILL_CANDLES)
             due = self.due_timeframes(symbol, now)
             if due:
                 await self.refresh_candles(symbol, due, count=3)

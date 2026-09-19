@@ -60,6 +60,9 @@ class Engine:
         self.context_provider = context_provider
         self.clock = clock
         self.id_factory = id_factory
+        # Where the market was the last time each setup was looked at, so one pass can ask what the
+        # price did in between instead of only where it happens to be now.
+        self._last_seen: dict[str, tuple[float, float]] = {}
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -160,6 +163,25 @@ class Engine:
         for row in rows:
             self.process_setup(row["id"], ctx, now)
 
+    def _travelled(self, setup_id: str, ctx: MarketContext, price: float, created_at: float, now: float):
+        """The range the market actually covered since this setup was last looked at.
+
+        A poll sees a point. Between two polls — or behind a data outage — price can cross a whole
+        zone and keep going, and the zone was then never "touched": the setup went from WATCHING
+        straight to a cancellation, with no word about the band it had walked through. The closed
+        M1 candles since the last pass carry the extremes the polls missed.
+        """
+        low = high = price
+        previous = self._last_seen.get(setup_id)
+        since = max(created_at, previous[0] if previous else now - 60.0)
+        if previous:
+            low, high = min(low, previous[1]), max(high, previous[1])
+        for candle in ctx.candles("M1"):
+            if candle.t >= since:  # bars that opened after the last pass: never pre-setup history
+                low, high = min(low, candle.l), max(high, candle.h)
+        self._last_seen[setup_id] = (now, price)
+        return low, high
+
     def process_setup(self, setup_id: str, ctx: MarketContext, now: float) -> None:
         row = self.store.get_setup(setup_id)
         if row is None or row["state"] not in OPEN_STATES:
@@ -169,12 +191,13 @@ class Engine:
         if ctx.bid is None:
             return
         price = ctx.bid
+        band = self._travelled(setup_id, ctx, price, row["created_at"], now)
 
         if state in (WATCHING, AT_ZONE, LIMIT):
-            if self._cancel_if_overtaken(setup, setup_id, ctx, price, now):
+            if self._cancel_if_overtaken(setup, setup_id, ctx, price, now, band):
                 return
         if state in (WATCHING, AT_ZONE):
-            self._before_entry(setup, setup_id, state, computed, ctx, price, now)
+            self._before_entry(setup, setup_id, state, computed, ctx, price, now, band)
         elif state == LIMIT:
             self._await_fill(setup, setup_id, computed, ctx, price, now)
         elif state == ENTERED:
@@ -182,12 +205,17 @@ class Engine:
 
     # -------------------------------------------------------------- pre-entry
     def _cancel_if_overtaken(
-        self, setup: Setup, setup_id: str, ctx: MarketContext, price: float, now: float
+        self, setup: Setup, setup_id: str, ctx: MarketContext, price: float, now: float, band: tuple[float, float]
     ) -> bool:
-        """The only two cancellations: the stop or TP1 reached before the entry was ever touched."""
-        hit_stop = price <= setup.stop_loss if setup.is_long else price >= setup.stop_loss
+        """The only two cancellations: the stop or TP1 reached before the entry was ever touched.
+
+        Judged on the range price covered, not on the poll's own price: a level crossed between two
+        passes is still a level crossed.
+        """
+        low, high = band
+        hit_stop = low <= setup.stop_loss if setup.is_long else high >= setup.stop_loss
         tp1 = setup.tp1
-        hit_tp1 = tp1 is not None and (price >= tp1 if setup.is_long else price <= tp1)
+        hit_tp1 = tp1 is not None and (high >= tp1 if setup.is_long else low <= tp1)
         reason = "SL_FIRST" if hit_stop else "TP1_FIRST" if hit_tp1 else ""
         if not reason:
             return False
@@ -197,6 +225,9 @@ class Engine:
             "setup_id": setup_id,
             "reason": reason,
             "price": price,
+            # Both in one window means the order is unknowable, and the owner is told exactly that
+            # rather than being left to guess why a zone that was reached produced no entry.
+            "zone_crossed": low <= setup.zone_high and high >= setup.zone_low,
         }
         text = tg.cancel_message(data, self._decimals(setup.symbol))
         self._close(setup_id, f"CANCELLED_{reason}", now, data, text)
@@ -211,8 +242,11 @@ class Engine:
         ctx: MarketContext,
         price: float,
         now: float,
+        band: tuple[float, float],
     ) -> None:
-        in_zone = setup.zone_low <= price <= setup.zone_high
+        # The zone counts as touched when the range price covered since the last pass overlaps it,
+        # not only when a poll lands inside a band a fast market crosses in seconds.
+        in_zone = band[0] <= setup.zone_high and band[1] >= setup.zone_low
         decimals = self._decimals(setup.symbol)
         base = {"symbol": setup.symbol, "direction": setup.direction, "setup_id": setup_id, "price": price}
 

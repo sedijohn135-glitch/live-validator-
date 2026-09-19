@@ -258,14 +258,18 @@ def cancel_message(data: dict[str, Any], decimals: int) -> str:
         why = "TP1 u prek para se çmimi të hynte në zonë — lëvizja shkoi pa ty."
     else:
         why = "SL u prek para se çmimi të hynte në zonë — ideja u thye para hyrjes."
-    return "\n".join(
-        [
-            _head("❌", "SETUPI U ANULUA", data["symbol"], data["direction"]),
-            why,
-            f"Çmimi: {num(data.get('price'), decimals)}",
-            f"ID: {esc(data['setup_id'])}",
-        ]
-    )
+    lines = [
+        _head("❌", "SETUPI U ANULUA", data["symbol"], data["direction"]),
+        why,
+        f"Çmimi: {num(data.get('price'), decimals)}",
+    ]
+    if data.get("zone_crossed"):
+        lines.append(
+            "ℹ️ Zona u prek në të njëjtën periudhë, pa asnjë konfirmim mes tyre — "
+            "prandaj asnjë hyrje: setupi u filtrua."
+        )
+    lines.append(f"ID: {esc(data['setup_id'])}")
+    return "\n".join(lines)
 
 
 def zone_failed_message(data: dict[str, Any], decimals: int) -> str:

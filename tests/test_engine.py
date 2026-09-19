@@ -9,8 +9,13 @@ from tests.synth import Feed
 ZONE = {"entry_low": 4295.0, "entry_high": 4300.0, "stop_loss": 4288.0, "tp1": 4330.0}
 
 
-def quiet_approach(feed: Feed, target: float = 4299.0, bars: int = 30) -> None:
-    """Walk the tape down to the zone so the candles and the quote tell the same story."""
+def quiet_approach(feed: Feed, target: float = 4302.0, bars: int = 30) -> None:
+    """Walk the tape down to just above the zone so the candles and the quote tell the same story.
+
+    It stops short of 4300 on purpose: the engine now reads the range price covered between passes,
+    so a tape that dips into the zone here is a real touch and the first tick would no longer be
+    the first touch.
+    """
     step = (target - feed.tape.price) / bars
     feed.tape.drift(bars, step=step, span=0.5)
 
@@ -65,6 +70,40 @@ def test_the_full_path_from_registration_to_enter_now(tmp_path):
     assert "HYR TANI" in text
     assert "Siguro fitimet" in text
     assert "Evidenca:" in text
+
+
+def test_a_zone_crossed_between_two_passes_still_counts_as_touched(tmp_path):
+    """The BTC-0919-NFP6 incident, in miniature.
+
+    A SHORT with its zone above the price. Price climbed through the whole band and on to the stop
+    while the engine was between passes, so no poll ever landed inside the zone. The owner was told
+    the setup was cancelled and never that the zone had been reached at all — the one message that
+    says the setup is live. Judged on the range price covered, the touch is not missable.
+    """
+    feed = Feed(tmp_path, price=4300.0)
+    setup_id = feed.submit(entry_low=4320.0, entry_high=4325.0, stop_loss=4340.0, tp1=4280.0)["setup_id"]
+    feed.tick(price=4300.0)
+    assert feed.state(setup_id) == "WATCHING"
+
+    # One minute in which price walks 4300 → 4330, straight through the zone, seen by no poll.
+    feed.tape.push(4300.0, 4330.0, 4300.0, 4330.0)  # o, h, l, c: one minute across the whole band
+    feed.tick(price=4330.0)
+
+    assert feed.state(setup_id) == "AT_ZONE", "the band was crossed, so the zone was touched"
+    assert "ZONA U PREK" in feed.last_message()
+
+
+def test_a_stop_crossed_between_two_passes_still_cancels(tmp_path):
+    """The same reading in the other direction: a level jumped over is still a level reached."""
+    feed = Feed(tmp_path, price=4300.0)
+    setup_id = feed.submit(entry_low=4320.0, entry_high=4325.0, stop_loss=4340.0, tp1=4280.0)["setup_id"]
+    feed.tick(price=4300.0)
+
+    feed.tape.push(4300.0, 4345.0, 4300.0, 4335.0)
+    feed.tick(price=4335.0)
+
+    assert feed.outcome(setup_id) == "CANCELLED_SL_FIRST"
+    assert "SETUPI U ANULUA" in feed.last_message()
 
 
 def test_a_runaway_price_becomes_a_limit_not_a_chase(tmp_path):
