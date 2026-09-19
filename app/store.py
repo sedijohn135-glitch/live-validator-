@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from typing import Any
 
 SCHEMA_VERSION = 1
+# Written into last_error when a message is abandoned, so a drop can never read as a delivery.
+DROPPED_PREFIX = "DROPPED: "
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS setups (
@@ -248,7 +250,12 @@ class Store:
         self.execute("UPDATE outbox SET sent_at = ? WHERE id = ?", (time.time() if now is None else now, outbox_id))
 
     def outbox_health(self) -> dict[str, Any]:
-        """Pending count, the age of the oldest and why it last failed — a stuck queue is silent."""
+        """Pending count, the age of the oldest, why it last failed, and how many were given up on.
+
+        A queue that stopped moving is silent, and so is one that quietly threw messages away. Both
+        have to be countable from outside: the owner sees this in /status and the validator reports
+        it through setup_status.
+        """
         row = self.query_one(
             "SELECT COUNT(*) AS pending, MIN(created_at) AS oldest, MAX(attempts) AS attempts "
             "FROM outbox WHERE sent_at IS NULL"
@@ -257,17 +264,54 @@ class Store:
             "SELECT last_error FROM outbox WHERE sent_at IS NULL AND last_error IS NOT NULL "
             "ORDER BY attempts DESC LIMIT 1"
         )
+        dropped = self.query_one(
+            "SELECT COUNT(*) AS n, MAX(last_error) AS why FROM outbox WHERE last_error LIKE ?",
+            (DROPPED_PREFIX + "%",),
+        )
+        last_error = (error["last_error"] if error else "") or ""
         return {
             "pending": row["pending"] if row else 0,
             "oldest": row["oldest"] if row else None,
             "attempts": (row["attempts"] if row else 0) or 0,
-            "last_error": (error["last_error"] if error else "") or "",
+            "last_error": last_error or ((dropped["why"] if dropped else "") or ""),
+            "dropped": (dropped["n"] if dropped else 0) or 0,
         }
+
+    def messages_for(self, setup_id: str) -> list[dict[str, Any]]:
+        """Every Telegram message this setup should have produced, and what became of it.
+
+        Without this, "I received nothing" and "nothing was ever queued" look identical from here.
+        """
+        rows = self.query(
+            "SELECT dedupe_key, sent_at, attempts, last_error FROM outbox WHERE dedupe_key LIKE ? ORDER BY id",
+            (setup_id + ":%",),
+        )
+        out = []
+        for row in rows:
+            error = row["last_error"] or ""
+            dropped = error.startswith(DROPPED_PREFIX)
+            out.append(
+                {
+                    "event": row["dedupe_key"].split(":", 1)[1],
+                    "delivered": bool(row["sent_at"]) and not dropped,
+                    "dropped": dropped,
+                    "attempts": row["attempts"],
+                    "error": error[:200],
+                }
+            )
+        return out
 
     def mark_failed(self, outbox_id: int, error: str) -> None:
         self.execute(
             "UPDATE outbox SET attempts = attempts + 1, last_error = ? WHERE id = ?",
             (error[:400], outbox_id),
+        )
+
+    def mark_dropped(self, outbox_id: int, error: str, now: float | None = None) -> None:
+        """Give up on one message without pretending it was delivered."""
+        self.execute(
+            "UPDATE outbox SET sent_at = ?, last_error = ? WHERE id = ?",
+            (time.time() if now is None else now, (DROPPED_PREFIX + error)[:400], outbox_id),
         )
 
     # ---------------------------------------------------------------- setups

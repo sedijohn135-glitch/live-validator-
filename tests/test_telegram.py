@@ -355,3 +355,47 @@ def test_the_card_warns_when_tp1_is_nearer_than_the_zone():
     safe = tg.registered_message({**card, "tp1_distance": 400.0}, 2)
     assert "më afër se zona" not in safe
     assert registered_message_text != safe
+
+
+# ------------------------------------------------- a drop must never look like a delivery
+def test_a_message_given_up_on_is_recorded_as_dropped_not_sent(tmp_path):
+    """The owner's report was "no alert arrived", and nothing in the system disagreed with it.
+
+    A dropped message used to be marked sent, so a silent failure and a real delivery were the same
+    row. Now the drop is written down, counted, and readable per setup.
+    """
+    store = Store(str(tmp_path / "drop.db"))
+    store.queue_message("SET-1:cancelled_tp1_first", "42", "anulim", 100.0)
+
+    async def call(method, payload):
+        raise tg.TelegramError("Bad Request: chat not found")
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42")
+    for _ in range(tg.MAX_SEND_ATTEMPTS):
+        asyncio.run(sender.drain_once())
+
+    health = store.outbox_health()
+    assert health["pending"] == 0, "the queue must not stay blocked"
+    assert health["dropped"] == 1
+    assert "chat not found" in health["last_error"]
+
+    (record,) = store.messages_for("SET-1")
+    assert record["event"] == "cancelled_tp1_first"
+    assert record["delivered"] is False
+    assert record["dropped"] is True
+
+
+def test_a_delivered_message_reads_as_delivered(tmp_path):
+    store = Store(str(tmp_path / "ok.db"))
+    store.queue_message("SET-2:registered", "42", "kartela", 100.0)
+
+    async def call(method, payload):
+        return {"message_id": 1}
+
+    sender = tg.OutboxSender(store, tg.TelegramClient("t", call), "42")
+    asyncio.run(sender.drain_once())
+
+    (record,) = store.messages_for("SET-2")
+    assert record["delivered"] is True
+    assert record["dropped"] is False
+    assert store.outbox_health()["dropped"] == 0

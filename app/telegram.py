@@ -443,7 +443,9 @@ class OutboxSender:
     def _failed(self, row, error: str) -> None:
         self.store.mark_failed(row["id"], error)
         if row["attempts"] + 1 >= MAX_SEND_ATTEMPTS:
-            self.store.mark_sent(row["id"])
+            # Marked dropped, never sent: a message nobody received must not be countable as one
+            # that arrived, or "I got no alert" has no trace anywhere.
+            self.store.mark_dropped(row["id"], error)
             logger.error(
                 "dropping outbox message %s after %s attempts: %s", row["dedupe_key"], MAX_SEND_ATTEMPTS, error
             )

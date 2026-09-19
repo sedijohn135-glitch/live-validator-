@@ -55,13 +55,17 @@ DISCOVERY_RETRY_S = 20.0  # symbols must resolve before anything can be polled; 
 
 def _outbox_lines(outbox: dict[str, Any], now: float) -> list[str]:
     """A queue that stopped moving used to be invisible: no alert arrived and nothing said why."""
-    if not outbox["pending"]:
-        return []
-    age = int(now - outbox["oldest"]) if outbox["oldest"] else 0
-    line = f"Mesazhe në pritje: {outbox['pending']} · më i vjetri {age}s"
-    if outbox["last_error"]:
-        line += f" · {tg.esc(outbox['last_error'][:80])}"
-    return [line]
+    lines = []
+    if outbox["pending"]:
+        age = int(now - outbox["oldest"]) if outbox["oldest"] else 0
+        line = f"Mesazhe në pritje: {outbox['pending']} · më i vjetri {age}s"
+        if outbox["last_error"]:
+            line += f" · {tg.esc(outbox['last_error'][:80])}"
+        lines.append(line)
+    if outbox.get("dropped"):
+        # Messages given up on are the worst case: the owner was never told, and nothing showed it.
+        lines.append(f"⚠️ Mesazhe të humbura: {outbox['dropped']} · {tg.esc(outbox['last_error'][:80])}")
+    return lines
 
 
 def _engine_line(engine: dict[str, Any]) -> str:

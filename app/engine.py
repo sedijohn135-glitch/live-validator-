@@ -512,7 +512,12 @@ class Engine:
             return self._summary(row, detailed=True)
         active = [self._summary(row) for row in self.store.setups_in_state(OPEN_STATES)]
         closed = [self._summary(row) for row in self.store.recent_setups(8) if row["state"] == DONE]
-        return {"active": active, "recent_closed": closed, "paused": self.paused()}
+        return {
+            "active": active,
+            "recent_closed": closed,
+            "paused": self.paused(),
+            "notifications": self.store.outbox_health(),
+        }
 
     def _summary(self, row, detailed: bool = False) -> dict[str, Any]:
         try:
@@ -546,6 +551,8 @@ class Engine:
             out["events"] = [
                 {"ts": ny_string(event["ts"]), "type": event["type"]} for event in self.store.events_for(row["id"], 12)
             ]
+            # A state change nobody was told about is a bug that looks exactly like no state change.
+            out["notifications"] = self.store.messages_for(row["id"])
         return out
 
     def stats(self, days: int = 7) -> dict[str, Any]:
