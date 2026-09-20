@@ -15,6 +15,7 @@ from mcp.server.auth.provider import construct_redirect_uri
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -132,10 +133,40 @@ def build_app(runtime: Runtime | None = None):
         expose_headers=["Mcp-Session-Id", "Mcp-Protocol-Version"],
         max_age=86400,
     )
+    # No-cache on /mcp: Brave's renderer caches the 'Working on it…' placeholder and skips the
+    # post-tool-call re-render that shows the formatted setup. cache-control: no-store forces every
+    # chunk to be picked up live; Connection: close stops Brave from holding an idle socket that
+    # the renderer treats as 'still streaming'.
+    app.add_middleware(_NoStoreOnMcpMiddleware)
     app.state.runtime = runtime
     app.state.server = server
     app.state.provider = provider
     return app
+
+
+class _NoStoreOnMcpMiddleware:
+    """Add `Cache-Control: no-store` and `Connection: close` to every `/mcp` response."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/mcp"):
+            await self.app(scope, receive, send)
+            return
+
+        async def wrapped_send(message):
+            if message["type"] == "http.response.start":
+                headers = [
+                    (k, v) for k, v in message.get("headers", [])
+                    if k.lower() not in (b"cache-control", b"connection")
+                ]
+                headers.append((b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"))
+                headers.append((b"connection", b"close"))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, wrapped_send)
 
 
 def _register_routes(
