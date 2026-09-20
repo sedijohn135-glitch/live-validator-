@@ -128,6 +128,7 @@ class Runtime:
         self.holder = secrets.token_hex(8)
         self.has_lease = False
         self._backfill_after_outage = False
+        self._last_idle_beat = 0.0
         self._down_since = 0.0
         self._outage_announced = False
         self.data_status = "not_configured"
@@ -365,6 +366,16 @@ class Runtime:
         self.ticks += 1
         self.last_tick_at = now
         await self._heal_connection(now)
+        if not self._symbols_to_watch():
+            # Nothing to monitor — but the pass still happened, and that matters twice over. An idle
+            # session is how the last connection died, so the link is still healed and checked here;
+            # and a loop that stops ticking cannot tell anyone whether it is alive. Reporting "the
+            # engine is not running" because nothing was registered is how the validator talked
+            # itself into a deadlock: no setups, so no ticks, so no setups.
+            if now - self._last_idle_beat >= IDLE_HEARTBEAT_S:
+                self._last_idle_beat = now
+                await self._heartbeat()
+            return
         await self.refresh_quotes()
         backfill, self._backfill_after_outage = self._backfill_after_outage, False
         for symbol in self.settings.symbols:
@@ -563,16 +574,11 @@ class Runtime:
             self.startup_done = True
 
     async def _engine_loop(self) -> None:
-        last_idle = 0.0
         while True:
             try:
                 if self.has_lease:
                     await self._ensure_discovered(self.clock())
-                    if self._symbols_to_watch():
-                        await self.tick()
-                    elif self.clock() - last_idle > IDLE_HEARTBEAT_S:
-                        last_idle = self.clock()
-                        await self._heartbeat()
+                    await self.tick()
             except Exception as exc:  # noqa: BLE001 - the loop must survive anything
                 self.engine_error = f"{type(exc).__name__}: {exc}"[:200]
                 logger.exception("engine tick failed")

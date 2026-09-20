@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from app import telegram as tg
+from app.engine import OPEN_STATES
 from app.evidence import evaluate
 from app.setup_model import normalise
 from tests.app_harness import make_runtime
@@ -246,3 +247,53 @@ def test_a_blip_is_not_announced_as_an_outage(tmp_path):
     runtime._on_data_ok()
     texts = [row["text"] for row in runtime.store.pending_messages(10)]
     assert any("Të dhënat u rikthyen" in text for text in texts), "an announced outage gets an answer"
+
+
+def test_the_engine_keeps_ticking_with_nothing_to_watch(tmp_path):
+    """The deadlock the owner hit: no setups, so no ticks, so the snapshot said the engine was dead.
+
+    Gemini reads `engine_ticking: false` and refuses to register anything, which guarantees there
+    will still be nothing to watch on the next pass. The loop has to run whether or not it has work.
+    """
+    runtime, ctrader, _telegram = make_runtime(tmp_path)
+
+    async def scenario():
+        await runtime.ctrader.discover()
+        assert runtime.store.setups_in_state(OPEN_STATES) == [], "nothing registered"
+        try:
+            await runtime.tick()
+        finally:
+            await runtime.ctrader.aclose()
+
+    asyncio.run(scenario())
+
+    assert runtime.ticks == 1
+    assert runtime.last_tick_at, "an idle pass is still a pass"
+    assert runtime.health()["engine"]["last_tick_age_s"] is not None, "and it is reported as alive"
+
+
+def test_a_closed_connection_is_rebuilt_not_retried(tmp_path):
+    """"Connection closed" means the link is gone: three retries on it are three failures.
+
+    This is what left the feed down for sixteen minutes with the quote frozen — the error was
+    treated as transient, so it was retried on the very session that had died.
+    """
+    from app.ctrader import DataError, is_session_error, is_transient
+
+    exc = DataError("Connection closed")
+    assert is_transient(exc)
+    assert is_session_error(exc), "a dead link needs a new one, not another attempt on the old one"
+
+    runtime, ctrader, _telegram = make_runtime(tmp_path)
+
+    async def scenario():
+        await runtime.ctrader.discover()
+        ctrader.fail_next = RuntimeError("Connection closed")
+        before = len([c for c in ctrader.calls if c[0] == "__connect__"])
+        try:
+            assert await runtime.ctrader.call("get_version"), "the reconnect must deliver a result"
+            return len([c for c in ctrader.calls if c[0] == "__connect__"]) - before
+        finally:
+            await runtime.ctrader.aclose()
+
+    assert asyncio.run(scenario()) >= 1, "the client reconnected"

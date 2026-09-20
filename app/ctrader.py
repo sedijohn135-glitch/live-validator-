@@ -87,9 +87,13 @@ TOKEN_KEYS = ("authorization", "token", "bearer", "access_token", "accesstoken",
 # A streamable-HTTP session dies on its own (idle, a proxy hop, a server restart) and the protocol
 # answers "Session not found" / 404: the client is then required to open a new one. Without this the
 # dead session id was reused for hours and every call failed until the container happened to restart.
+# Errors a retry on the same client can never fix, because the link behind it is gone. Retrying a
+# closed connection three times is three failures and a feed that stays down until someone notices.
 SESSION_PATTERN = re.compile(
     r"session[^.\n]{0,20}(?:not found|unknown|terminated|invalid)|"
-    r"(?:no|invalid|unknown|missing)[^.\n]{0,20}session|re-?initiali[sz]e|\b404\b|\b401\b|\b403\b",
+    r"(?:no|invalid|unknown|missing)[^.\n]{0,20}session|re-?initiali[sz]e|\b404\b|\b401\b|\b403\b|"
+    r"connection closed|closed|disconnected|broken pipe|reset by peer|"
+    r"unreachable|not connected|no connection",
     re.IGNORECASE,
 )
 # A hiccup at the transport, not an answer about the request. The generic wordings matter as much as
