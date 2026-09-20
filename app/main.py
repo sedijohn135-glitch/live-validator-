@@ -134,9 +134,10 @@ def build_app(runtime: Runtime | None = None):
         max_age=86400,
     )
     # No-cache on /mcp: Brave's renderer caches the 'Working on it…' placeholder and skips the
-    # post-tool-call re-render that shows the formatted setup. cache-control: no-store forces every
-    # chunk to be picked up live; Connection: close stops Brave from holding an idle socket that
-    # the renderer treats as 'still streaming'.
+    # post-tool-call re-render that shows the formatted setup. The fix is six headers on every
+    # /mcp response — together they stop Brave (and any other strict-cache browser) from holding
+    # the intermediate state past the model's final chunk. OPTIONS preflights are skipped so the
+    # CORS layer keeps its own Max-Age caching.
     app.add_middleware(_NoStoreOnMcpMiddleware)
     app.state.runtime = runtime
     app.state.server = server
@@ -144,8 +145,51 @@ def build_app(runtime: Runtime | None = None):
     return app
 
 
+# Header names the no-store middleware overrides. Lower-cased bytes for the ASGI comparison.
+_NOSTORE_OVERRIDE = frozenset({
+    b"cache-control",
+    b"connection",
+    b"pragma",
+    b"expires",
+    b"x-content-type-options",
+    b"vary",
+    b"surrogate-control",
+})
+
+
 class _NoStoreOnMcpMiddleware:
-    """Add `Cache-Control: no-store` and `Connection: close` to every `/mcp` response."""
+    """Force every `/mcp` response to bypass caches and never reuse a socket.
+
+    The problem this fixes is specific to Gemini Spark opened in Brave. After the CORS fix the
+    browser sends the MCP POST and the streaming thoughts appear live, but the final formatted
+    setup report is never rendered — the UI stays on the 'Working on it…' placeholder. The
+    streaming layer in Brave treats the final chunk as still in flight: it caches the placeholder
+    state, holds an idle keep-alive socket that the renderer never sees closing, and never swaps
+    the panel for the formatted output. The owner has to refresh the page (or open the mobile
+    app, where the same response renders correctly) to see what was already sent.
+
+    Six headers on every /mcp response stop that cycle:
+
+    - `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`
+        Brave's HTTP cache cannot hold the placeholder state across requests.
+    - `Pragma: no-cache` and `Expires: 0`
+        HTTP/1.0 caches and intermediaries that ignore Cache-Control still bust on these.
+    - `Surrogate-Control: no-store`
+        CDN / reverse-proxy layers (Railway, Cloudflare, Fly) cannot hold a surrogate copy.
+    - `Connection: close`
+        Forces a new TCP/TLS handshake per request so the renderer cannot keep an idle socket it
+        mistakes for an in-flight stream after the model finishes.
+    - `X-Content-Type-Options: nosniff`
+        Brave's renderer will not MIME-sniff a partial SSE chunk into a different content type and
+        render the wrong thing.
+    - `Vary: Accept, Origin`
+        A shared cache cannot serve a /mcp response to a different Accept or Origin header
+        combination, which is the only way the placeholder-leak survives a reload.
+
+    OPTIONS preflights are passed through untouched — the CORS middleware owns their caching via
+    `Access-Control-Max-Age`, and we don't want to turn every cross-origin POST into a fresh
+    preflight.
+    """
 
     def __init__(self, app):
         self.app = app
@@ -154,15 +198,23 @@ class _NoStoreOnMcpMiddleware:
         if scope["type"] != "http" or not scope.get("path", "").startswith("/mcp"):
             await self.app(scope, receive, send)
             return
+        if scope.get("method", "GET").upper() == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
 
         async def wrapped_send(message):
             if message["type"] == "http.response.start":
                 headers = [
                     (k, v) for k, v in message.get("headers", [])
-                    if k.lower() not in (b"cache-control", b"connection")
+                    if k.lower() not in _NOSTORE_OVERRIDE
                 ]
                 headers.append((b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"))
                 headers.append((b"connection", b"close"))
+                headers.append((b"pragma", b"no-cache"))
+                headers.append((b"expires", b"0"))
+                headers.append((b"surrogate-control", b"no-store"))
+                headers.append((b"x-content-type-options", b"nosniff"))
+                headers.append((b"vary", b"Accept, Origin"))
                 message["headers"] = headers
             await send(message)
 
