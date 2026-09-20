@@ -77,6 +77,46 @@ def test_mcp_path_without_trailing_slash_is_the_endpoint(client):
     assert trailing.status_code in (307, 308, 401, 404)
 
 
+# ----------------------------------------------------------------------- CORS
+def test_cors_preflight_from_gemini_origin_succeeds(client):
+    """Failure mode: Brave's Shields freezes the UI when the preflight OPTIONS fails or returns
+    the wrong headers. The middleware must answer 204 with full CORS headers so the browser
+    sends the actual POST."""
+    response = client.options(
+        "/mcp",
+        headers={
+            "Origin": "https://gemini.google.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type,accept,mcp-session-id",
+        },
+    )
+    assert response.status_code in (200, 204)
+    assert response.headers.get("access-control-allow-origin") == "https://gemini.google.com"
+    assert "POST" in response.headers.get("access-control-allow-methods", "")
+    allow_headers = response.headers.get("access-control-allow-headers", "").lower()
+    assert "authorization" in allow_headers
+    assert "mcp-session-id" in allow_headers
+
+
+def test_cors_response_exposes_session_header(client):
+    """Without expose-headers, JS reading the response cannot see Mcp-Session-Id, which breaks
+    multi-turn tool calls in Spark."""
+    response = client.post(
+        "/mcp",
+        json=rpc("tools/list"),
+        headers={**MCP_HEADERS, "Origin": "https://gemini.google.com"},
+    )
+    assert response.status_code == 401
+    assert response.headers.get("access-control-allow-origin") == "https://gemini.google.com"
+    assert "mcp-session-id" in response.headers.get("access-control-expose-headers", "").lower()
+
+
+def test_cors_preflight_without_origin_is_allowed(client):
+    """Server-to-server callers (curl, CI, Claude) have no Origin header; they must not be blocked."""
+    response = client.options("/mcp", headers={"Access-Control-Request-Method": "POST"})
+    assert response.status_code in (200, 204)
+
+
 # --------------------------------------------------------------------- metadata
 def test_authorization_server_metadata_uses_the_public_base_url(client):
     payload = client.get("/.well-known/oauth-authorization-server").json()

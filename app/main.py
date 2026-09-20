@@ -15,6 +15,7 @@ from mcp.server.auth.provider import construct_redirect_uri
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -106,6 +107,31 @@ def build_app(runtime: Runtime | None = None):
     local = base.startswith("http://localhost") or base.startswith("http://127.0.0.1")
     security = TransportSecuritySettings(enable_dns_rebinding_protection=False) if not local else None
     app = server.streamable_http_app(json_response=True, stateless_http=True, transport_security=security)
+    # CORS first, before auth: the MCP SDK ships no CORS middleware, so any browser cross-origin POST
+    # fails the preflight OPTIONS (Brave's Shields in particular refuses to send the actual request
+    # and the UI freezes until a refresh). Gemini Spark needs `Authorization`, `Mcp-Session-Id` and
+    # `Mcp-Protocol-Version` exposed back to JS; the OAuth flow uses a popup window that opens from
+    # `gemini.google.com`, so we allow that origin and its subdomains explicitly.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "https://gemini.google.com",
+            "https://gemini.googleusercontent.com",
+        ],
+        allow_origin_regex=r"^https://([a-z0-9-]+\.)*gemini\.google$|^https://([a-z0-9-]+\.)*gemini\.google\.com$",
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "Mcp-Session-Id",
+            "Mcp-Protocol-Version",
+            "Last-Event-Id",
+        ],
+        expose_headers=["Mcp-Session-Id", "Mcp-Protocol-Version"],
+        max_age=86400,
+    )
     app.state.runtime = runtime
     app.state.server = server
     app.state.provider = provider
