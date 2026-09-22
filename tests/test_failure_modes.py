@@ -272,6 +272,61 @@ def test_the_engine_keeps_ticking_with_nothing_to_watch(tmp_path):
     assert runtime.health()["engine"]["last_tick_age_s"] is not None, "and it is reported as alive"
 
 
+def test_the_engine_keeps_ticking_when_discovery_never_resolves(tmp_path):
+    """The same deadlock, the other side of the coin: a failed discovery leaves `ctrader.symbols`
+    empty, and the old `tick()` returned before `last_tick_at` was set. The owner saw
+    `engine_ticking: false` for the entire outage, Gemini refused to register anything, and the
+    feed could never recover because nothing in the snapshot told anyone the loop was still alive.
+
+    `tick()` must mark itself alive on every pass regardless of whether the symbols resolved —
+    the loop is the thing the snapshot is reporting on, not the feed.
+    """
+    runtime, _ctrader, _telegram = make_runtime(tmp_path)
+    assert runtime.ctrader.symbols == {}, "precondition: discovery has not run"
+
+    async def scenario():
+        try:
+            await runtime.tick()
+        finally:
+            await runtime.ctrader.aclose()
+
+    asyncio.run(scenario())
+
+    assert runtime.ticks == 1, "the pass still counts as a tick"
+    assert runtime.last_tick_at, "and it is recorded as a tick"
+    # engine_ticking is the line Gemini reads; it must be true here, not false.
+    block = runtime.data_block("XAUUSD", has_quote=False)
+    assert block["engine_ticking"] is True, "the snapshot must say the loop is alive"
+    assert "engine_note" not in block, "no engine_note while the loop is honestly running"
+
+
+def test_the_engine_keeps_ticking_when_discovery_keeps_failing(tmp_path):
+    """Two passes in a row with discovery failing on each: `last_tick_at` must advance and the
+    snapshot must keep reporting the engine as alive. The old behaviour trapped the validator in
+    `engine_ticking: false` from the moment discovery first failed until the process restarted.
+    """
+    runtime, ctrader, _telegram = make_runtime(tmp_path)
+    # Two back-to-back failures so the loop runs twice with discovery still unresolved.
+    ctrader.fail_every_call = RuntimeError("Connection closed")
+
+    async def scenario():
+        try:
+            await runtime.tick()
+            first = runtime.last_tick_at
+            await asyncio.sleep(0.01)
+            await runtime.tick()
+            return first
+        finally:
+            await runtime.ctrader.aclose()
+
+    first = asyncio.run(scenario())
+
+    assert runtime.ticks == 2, "two passes, two ticks"
+    assert runtime.last_tick_at > first, "the loop advanced even though discovery kept failing"
+    block = runtime.data_block("XAUUSD", has_quote=False)
+    assert block["engine_ticking"] is True
+
+
 def test_a_closed_connection_is_rebuilt_not_retried(tmp_path):
     """"Connection closed" means the link is gone: three retries on it are three failures.
 

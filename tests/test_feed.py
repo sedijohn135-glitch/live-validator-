@@ -262,14 +262,22 @@ def test_status_says_whether_the_engine_is_ticking(tmp_path):
     assert "pa lease" in text and "boom" in text
 
 
-def test_a_tick_is_skipped_until_the_symbols_resolve(tmp_path):
-    """Polling before discovery only raises, and a raised tick used to look like a dead feed."""
+def test_a_tick_counts_even_when_symbols_have_not_resolved(tmp_path):
+    """Polling before discovery must not run (it would only raise), but the pass itself is still a
+    pass — the loop is alive and the snapshot must say so. The old behaviour skipped the whole
+    tick and let the snapshot report `engine_ticking: false`, which Gemini then read as "the
+    validator is dead" and refused to register anything, deepening the outage into a deadlock.
+    """
     import asyncio
 
     runtime, _fake, _tg = make_runtime(tmp_path)
     runtime.ctrader.symbols = {}
+    before = runtime.clock()
     asyncio.run(runtime.tick())
-    assert runtime.ticks == 0
+    assert runtime.ticks == 1, "the pass still counts as a tick"
+    assert runtime.last_tick_at >= before, "and last_tick_at is set so engine_ticking stays true"
+    block = runtime.data_block("XAUUSD", False, runtime.clock())
+    assert block["engine_ticking"] is True, "the loop is alive even though polling was skipped"
 
 
 def test_discovery_is_retried_with_a_fresh_connection_and_never_timed_out(tmp_path):
