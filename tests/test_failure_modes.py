@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import socket
@@ -16,6 +17,7 @@ import pytest
 from app import telegram as tg
 from app.engine import OPEN_STATES
 from app.evidence import evaluate
+from app.runtime import ENGINE_WATCHDOG_S
 from app.setup_model import normalise
 from tests.app_harness import make_runtime
 from tests.synth import Feed, Tape
@@ -297,3 +299,72 @@ def test_a_closed_connection_is_rebuilt_not_retried(tmp_path):
             await runtime.ctrader.aclose()
 
     assert asyncio.run(scenario()) >= 1, "the client reconnected"
+
+
+def test_a_background_loop_that_dies_is_restarted(tmp_path, monkeypatch):
+    """The loops catch Exception, which is not enough.
+
+    A CancelledError leaking out of the MCP client's task group is a BaseException: it ends the
+    task with no line in the log, and nothing brought it back. The engine sat dead for a day that
+    way, with a setup registered and the web server answering normally in front of it.
+    """
+    from app import runtime as runtime_module
+
+    runtime, _ctrader, _telegram = make_runtime(tmp_path)
+    monkeypatch.setattr(runtime_module, "SUPERVISOR_RESTART_S", 0.0)
+    starts: list[int] = []
+
+    async def flaky() -> None:
+        starts.append(1)
+        if len(starts) == 1:
+            raise asyncio.CancelledError  # leaked from a library, not a shutdown
+        if len(starts) == 2:
+            raise RuntimeError("boom")
+        await asyncio.sleep(3600)
+
+    async def main() -> int:
+        task = asyncio.create_task(runtime._supervise("test", flaky))
+        for _ in range(200):
+            if len(starts) >= 3:
+                break
+            await asyncio.sleep(0.001)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return len(starts)
+
+    assert asyncio.run(main()) >= 3, "a dead loop must come back, whatever killed it"
+
+
+def test_the_watchdog_replaces_an_engine_that_froze(tmp_path):
+    """A task can be alive and still stuck inside an await that never returns.
+
+    From outside that is indistinguishable from a dead one, and it lasts just as long. The
+    supervisor cannot see it — only the absence of progress can.
+    """
+    runtime, _ctrader, _telegram = make_runtime(tmp_path)
+    clock = {"now": 1_800_000_000.0}
+    runtime.clock = lambda: clock["now"]
+    runtime.has_lease = True
+    runtime.startup_done = True
+
+    async def main() -> tuple[bool, bool]:
+        stuck = asyncio.create_task(asyncio.sleep(3600), name="engine")
+        runtime._tasks = [stuck]
+        runtime.last_tick_at = clock["now"]
+
+        fresh = await runtime.restart_engine_if_stuck()  # ticking: nothing to do
+        clock["now"] += ENGINE_WATCHDOG_S + 1
+        replaced = await runtime.restart_engine_if_stuck()
+
+        for task in runtime._tasks:
+            task.cancel()
+        with contextlib.suppress(Exception):
+            await asyncio.wait(runtime._tasks, timeout=1.0)
+        return fresh, replaced
+
+    was_fresh, was_replaced = asyncio.run(main())
+    assert was_fresh is False, "a ticking engine is left alone"
+    assert was_replaced is True
+    assert runtime.engine_restarts == 1
+    assert runtime.health()["engine"]["restarts"] == 1, "and the owner can see it happened"

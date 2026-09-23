@@ -51,6 +51,9 @@ OUTAGE_PAUSE_S = 20.0
 RECONNECT_EVERY_S = 120.0  # while the feed is down, rebuild the link this often
 BACKFILL_CANDLES = 180  # M1 bars fetched once the feed returns: three hours of the blind period
 ENGINE_STALE_S = 60.0  # beyond this the loop is not running, whatever the feed says
+SUPERVISOR_RESTART_S = 3.0  # how long to wait before restarting a background loop that died
+WATCHDOG_POLL_S = 20.0
+ENGINE_WATCHDOG_S = 180.0  # no tick in three minutes while holding the lease means it is stuck
 DISCOVERY_RETRY_S = 20.0  # symbols must resolve before anything can be polled; keep trying
 
 
@@ -80,6 +83,9 @@ def _engine_line(engine: dict[str, Any]) -> str:
         state = f"❌ cikli i fundit {age}s më parë"
     if not engine["has_lease"]:
         state += " · pa lease"
+    if engine.get("restarts"):
+        # A self-heal is invisible otherwise, and a rising count is the thing worth investigating.
+        state += f" · {engine['restarts']} rinisje"
     if engine["error"]:
         state += f" · {tg.esc(engine['error'])}"
     return f"Motori: {state}"
@@ -129,6 +135,7 @@ class Runtime:
         self.has_lease = False
         self._backfill_after_outage = False
         self._last_idle_beat = 0.0
+        self.engine_restarts = 0
         self._down_since = 0.0
         self._outage_announced = False
         self.data_status = "not_configured"
@@ -513,6 +520,7 @@ class Runtime:
                 "last_tick_age_s": int(now - self.last_tick_at) if self.last_tick_at else None,
                 "has_lease": self.has_lease,
                 "startup_done": self.startup_done,
+                "restarts": self.engine_restarts,
                 "error": self.engine_error,
             },
             "telegram": "ok" if self.settings.telegram_configured() else "not_configured",
@@ -525,16 +533,72 @@ class Runtime:
         }
 
     # ----------------------------------------------------------- background
+    async def _supervise(self, name: str, loop: Callable[[], Any]) -> None:
+        """Run a loop forever, restarting it whenever it dies.
+
+        Each loop catches `Exception`, which is not enough. A `CancelledError` leaking out of the
+        MCP client's task group is a `BaseException`: it ends the task without a line in the log,
+        and nothing brought it back. The engine sat dead for a day that way — a setup registered,
+        the web server answering normally in front of it, and no pass since the minute it was
+        created.
+        """
+        while True:
+            try:
+                await loop()
+                logger.error("background loop %s returned on its own; restarting", name)
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise  # a real shutdown: let it through
+                logger.error("background loop %s was cancelled from inside; restarting", name)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException:  # noqa: BLE001 - a loop that dies must never stay dead
+                logger.exception("background loop %s died; restarting", name)
+            await asyncio.sleep(SUPERVISOR_RESTART_S)
+
+    async def _watchdog(self) -> None:
+        """A task can be alive and still stuck: restart the engine when it stops making progress.
+
+        The supervisor covers a loop that dies. This covers the other half — one frozen inside an
+        await that never returns, which looks identical from outside and lasts just as long.
+        """
+        while True:
+            await asyncio.sleep(WATCHDOG_POLL_S)
+            with contextlib.suppress(Exception):
+                await self.restart_engine_if_stuck()
+
+    async def restart_engine_if_stuck(self) -> bool:
+        """Replace the engine task when it has stopped making progress. True when it was replaced."""
+        if not self.has_lease or not self.startup_done or not self.last_tick_at:
+            return False
+        age = self.clock() - self.last_tick_at
+        if age < ENGINE_WATCHDOG_S:
+            return False
+        logger.error("engine has not ticked for %ss — restarting the loop", int(age))
+        self.engine_restarts += 1
+        self.last_tick_at = self.clock()  # a grace period, so a slow restart is not a restart loop
+        for task in list(self._tasks):
+            if task.get_name() == "engine":
+                task.cancel()
+                self._tasks.remove(task)
+        # The link is the usual thing a stuck pass is stuck on, and the new loop must not inherit it.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.ctrader.aclose(), timeout=5.0)
+        self._tasks.append(asyncio.create_task(self._supervise("engine", self._engine_loop), name="engine"))
+        return True
+
     async def run_forever(self) -> None:
         """Start every background task once. Cancelled by the lifespan on shutdown."""
         self.start_count += 1
         self._tasks = [
-            asyncio.create_task(self._lease_loop(), name="lease"),
+            asyncio.create_task(self._supervise("lease", self._lease_loop), name="lease"),
             asyncio.create_task(self._startup_task(), name="startup"),
-            asyncio.create_task(self._engine_loop(), name="engine"),
-            asyncio.create_task(self._sender_loop(), name="telegram-sender"),
-            asyncio.create_task(self._commands_loop(), name="telegram-commands"),
-            asyncio.create_task(self._report_loop(), name="daily-report"),
+            asyncio.create_task(self._supervise("engine", self._engine_loop), name="engine"),
+            asyncio.create_task(self._supervise("telegram-sender", self._sender_loop), name="telegram-sender"),
+            asyncio.create_task(self._supervise("telegram-commands", self._commands_loop), name="telegram-commands"),
+            asyncio.create_task(self._supervise("daily-report", self._report_loop), name="daily-report"),
+            asyncio.create_task(self._watchdog(), name="watchdog"),
         ]
 
     async def stop(self, timeout: float = 5.0) -> None:
