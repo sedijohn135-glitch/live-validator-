@@ -366,13 +366,31 @@ class Runtime:
 
     # ------------------------------------------------------------------ ticks
     async def tick(self) -> None:
-        """One engine pass: quotes, due candles, then the state machine per symbol."""
+        """One engine pass: quotes, due candles, then the state machine per symbol.
+
+        Every pass counts as a tick and updates `last_tick_at`, even when discovery has not yet
+        resolved the symbols or no setup is being watched. The owner reads `engine_ticking` from
+        the snapshot to decide whether to arm a setup, and an honest "the loop is alive but the
+        feed is down" beats a stale `engine_ticking: false` that makes Gemini refuse to register
+        anything — which would then guarantee there is nothing to watch on the next pass, and
+        the deadlock the loop was supposed to prevent is back.
+
+        When the symbols are still empty (discovery pending or repeatedly failing), the pass
+        only heals the connection and heartbeats; polling APIs without resolved symbols would
+        only raise.
+        """
         now = self.clock()
-        if not self.ctrader.symbols:
-            return  # discovery has not resolved the symbols yet: polling would only raise
         self.ticks += 1
         self.last_tick_at = now
         await self._heal_connection(now)
+        if not self.ctrader.symbols:
+            # Discovery has not resolved the symbols yet — credentials may be missing, the
+            # cTrader session may have died, or the network may be down. Polling now would only
+            # raise; heartbeat instead so the data path is exercised at the slow idle rate.
+            if now - self._last_idle_beat >= IDLE_HEARTBEAT_S:
+                self._last_idle_beat = now
+                await self._heartbeat()
+            return
         if not self._symbols_to_watch():
             # Nothing to monitor — but the pass still happened, and that matters twice over. An idle
             # session is how the last connection died, so the link is still healed and checked here;

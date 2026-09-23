@@ -64,9 +64,8 @@ Botit: `/selftest` → të gjitha rreshtat ✅. Nëse diçka është ❌, lexo r
 
 ## 8) Lidh Gemini
 1. Hap **gemini.google.com** në browser (nëse s'shfaqet opsioni, zgjidh "Desktop site").
-   **Browser-i ka rëndësi:** Opera dhe Chrome punojnë rrjedhshëm. Brave e ngrin Spark-un në mes
-   të analizës (Shields e ndërpret rrjedhën e mendimeve) — ose përdor Opera/Chrome, ose fik
-   Shields për `gemini.google.com`.
+   **Browser-i:** Chrome, Opera, Edge dhe Safari janë të sigurt. **Brave** shpesh ngrin te
+   "Working on it…" edhe me CORS-in e serverit — shih "Brave dhe paneli që ngrin" më poshtë.
 2. **Settings → Connected Apps → Custom apps for Spark → Add**.
 3. **MCP Server URL**: `https://<domeni-yt>.up.railway.app/mcp` (me `/mcp` në fund, pa `/` pas tij).
 4. **Client ID** dhe **Client secret** (te "Additional settings") **lëri bosh**.
@@ -77,6 +76,26 @@ Botit: `/selftest` → të gjitha rreshtat ✅. Nëse diçka është ❌, lexo r
    `OAUTH_STATIC_CLIENT_ID`, `OAUTH_STATIC_CLIENT_SECRET` (dy tekste të rastësishme që i zgjedh ti) dhe
    `OAUTH_STATIC_REDIRECT_URIS` (adresa e ridrejtimit që tregon Gemini), prit redeploy, pastaj fut të
    njëjtat vlera te Gemini.
+
+### Brave dhe paneli që ngrin
+
+Brave ka një bug renderimi specifik për Gemini Spark: pas një tool-call (p.sh. `setup_submit`)
+panel i analizës ngrin te "Working on it…" dhe setupi i formatuar nuk shfaqet. Mendimet stream-ohen
+live, fiksioni i CORS-it zgjidhet, por final-output-i mbetet i fshehur — derisa rifreskon faqen
+ose e hap në aplikacionin e Gemini-t në telefon (aty shfaqet normalisht).
+
+Serveri tani dërgon gjashtë header-a mbrojtës në çdo përgjigje `/mcp` — `Cache-Control: no-store,
+no-cache, must-revalidate, max-age=0`, `Pragma: no-cache`, `Expires: 0`, `Surrogate-Control:
+no-store`, `Connection: close`, `X-Content-Type-Options: nosniff`, `Vary: Accept, Origin`. Kjo
+ndalon Brave-n nga mbajtja e gjendjes së "Working on it…" dhe e detyron renderer-in të marrë çdo
+chunk live. Nëse paneli prapë ngrin:
+
+1. Rifresko faqen (`Ctrl+R`) — dalja e plotë është aty, vetëm renderer-i Brave-it e humbi.
+2. Fik **Brave Shields** për `gemini.google.com` (ikona e leonit → Shields → OFF për këtë sit)
+   dhe provo sërish — kjo e kalon bug-un në shumicën e rasteve.
+3. Si plan B: hap **aplikacionin Gemini në telefon** — i njëjti setup shfaqet aty pa ndërprerje,
+   dhe Telegram-i merr njoftimin menjëherë.
+4. Si plan C: përdor **Chrome ose Opera** për analizën; Brave mbetet për gjithçka tjetër.
 
 ## 9) Skill-i në Gemini Spark
 Ngarko `spark-skill/live-validator/SKILL.md`, ose ngjit në skill-in tënd tekstin e plotë nga
@@ -101,4 +120,4 @@ kush vendos momentin e hyrjes.
 | 🔑 token skadoi | cTrader Web → Remote MCP → `/ctrader …` |
 | S'vjen asnjë mesazh | `/start` te boti; `TELEGRAM_CHAT_ID` i saktë; `/selftest` |
 | Çmimi te mesazhi ndryshon nga aplikacioni yt | po tregton te broker/platformë tjetër; përdor IC Markets |
-| Spark ngrin gjatë analizës, pa gabim | browser-i: Brave e bllokon rrjedhën; përdor Opera ose Chrome, ose fik Shields për `gemini.google.com` |
+| Spark ngrin gjatë analizës, pa gabim | paneli ngrin te "Working on it…" në Brave edhe pas CORS + no-store; rifresko faqen, ose fik Shields për `gemini.google.com`, ose përdor Chrome/Opera, ose hap aplikacionin Gemini në telefon (aty shfaqet normalisht) |
