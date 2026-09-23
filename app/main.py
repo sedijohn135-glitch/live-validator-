@@ -15,7 +15,6 @@ from mcp.server.auth.provider import construct_redirect_uri
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -139,6 +138,8 @@ def build_app(runtime: Runtime | None = None):
     # the intermediate state past the model's final chunk. OPTIONS preflights are skipped so the
     # CORS layer keeps its own Max-Age caching.
     app.add_middleware(_NoStoreOnMcpMiddleware)
+    # Outermost, so a bare OPTIONS never reaches the auth layer that would refuse it.
+    app.add_middleware(_BarePreflightMiddleware)
     app.state.runtime = runtime
     app.state.server = server
     app.state.provider = provider
@@ -155,6 +156,43 @@ _NOSTORE_OVERRIDE = frozenset({
     b"vary",
     b"surrogate-control",
 })
+
+
+class _BarePreflightMiddleware:
+    """Answer an `OPTIONS /mcp` that carries no `Origin`, before auth can refuse it.
+
+    Starlette's CORS layer only recognises a preflight when `Origin` is present; without it the
+    request falls through to the authenticated app and comes back 401. Some clients and proxies
+    probe with a bare OPTIONS, and a 401 there reads as "this endpoint is down". A preflight
+    carries no body and asks for nothing, so answering 204 exposes nothing — and preflights that
+    do carry an Origin are passed straight through, so the CORS layer still owns those.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        bare_preflight = (
+            scope["type"] == "http"
+            and scope.get("method", "GET").upper() == "OPTIONS"
+            and scope.get("path", "").startswith("/mcp")
+            and not any(k.lower() == b"origin" for k, _v in scope.get("headers", []))
+        )
+        if not bare_preflight:
+            await self.app(scope, receive, send)
+            return
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 204,
+                "headers": [
+                    (b"allow", b"GET, POST, OPTIONS, DELETE"),
+                    (b"access-control-allow-methods", b"GET, POST, OPTIONS, DELETE"),
+                    (b"content-length", b"0"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
 
 
 class _NoStoreOnMcpMiddleware:
