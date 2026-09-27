@@ -30,6 +30,17 @@ def impulse(tape: Tape) -> None:
     tape.push(o, o + 2 * atr, o - 0.1, o + 1.8 * atr)
 
 
+def break_supply(tape: Tape) -> None:
+    """A swing high, a pullback off it, then a close through it: the nearest supply gives way."""
+    atr = tape.context().atr("M1") or 1.0
+    o = tape.price
+    peak = o + 1.2 * atr
+    tape.push(o, peak, o - 0.1, o + 0.9 * atr)
+    dip = peak - 1.4 * atr
+    tape.push(o + 0.9 * atr, peak - 0.1 * atr, dip, dip + 0.1 * atr)
+    tape.push(dip + 0.1 * atr, peak + 0.8 * atr, dip, peak + 0.6 * atr)
+
+
 def verdict_for(tape: Tape, setup, touch_ts: float, **ctx_kwargs):
     return evaluate(setup, tape.context(**ctx_kwargs), touch_ts)
 
@@ -75,15 +86,25 @@ def test_momentum_and_absorption_alone_never_confirm():
     assert not verdict.confirmed
 
 
-def test_one_primary_plus_one_weak_signal_confirms():
+def test_a_primary_plus_a_weak_signal_is_not_enough_without_the_break():
+    """The combination that entered both the win and the loss. It says the zone reacted, not who won.
+
+    RECLAIM + MOMENTUM reaches the score; the nearest supply has not given way, so the entry waits.
+    The moment it does, the same evidence is an entry.
+    """
     tape = approach()
     touch = tape.now
     tape.sweep(low=4291.0, close=4298.0)
     impulse(tape)
-    verdict = verdict_for(tape, long_setup(), touch)
-    assert verdict.score >= SCORE_MIN
-    assert verdict.has_primary
-    assert verdict.ready
+    before = verdict_for(tape, long_setup(), touch)
+    assert before.score >= SCORE_MIN and before.has_primary
+    assert "STRUCTURE" in before.holds
+    assert not before.ready
+
+    break_supply(tape)
+    after = verdict_for(tape, long_setup(), touch)
+    assert "SHIFT" in after.codes
+    assert after.ready
 
 
 def test_the_same_signals_work_for_a_short():
@@ -101,6 +122,7 @@ def test_a_wide_spread_holds_the_entry_without_killing_the_setup():
     touch = tape.now
     tape.sweep(low=4291.0, close=4298.0)
     impulse(tape)
+    break_supply(tape)
     verdict = verdict_for(tape, long_setup(), touch, spread=9.0, median=0.2)
     assert "SPREAD" in verdict.holds
     assert not verdict.ready
@@ -217,6 +239,7 @@ def test_without_a_reaction_off_the_extreme_nothing_is_confirmed():
     touch = tape.now
     tape.sweep(low=4291.0, close=4298.0)
     impulse(tape)
+    break_supply(tape)
     ready = verdict_for(tape, long_setup(), touch)
     assert ready.ready
 
@@ -286,13 +309,13 @@ def test_the_setup_that_failed_is_not_confirmed_where_it_sat():
     assert "REACTION" in verdict.holds
 
 
-def test_the_failed_setup_would_have_been_a_limit_not_a_market_fill(tmp_path):
+def test_the_failed_setup_never_reaches_an_entry_at_all(tmp_path):
     """The honest reading of that window, end to end through the engine.
 
-    At 14:10 the evidence was real: a 0.60 dip under the zone low is half an ATR at the volatility
-    of the moment, and the zone's better half then held for three bars. What was wrong was the fill —
-    4392.20 is the expensive edge of a 4389.82-4392.35 demand zone. The validator now waits for the
-    cheap half instead of paying the top of its own zone.
+    At 14:10 the evidence was real — a 0.60 dip under the zone low is half an ATR at that
+    volatility, and the better half of the zone then held for three bars. But the nearest supply
+    above was never broken in that window, so under the break rule no entry existed at any price.
+    This is the third real loss the rule would have stopped, after HBZA and before it.
     """
     from tests.synth import Feed
 
@@ -315,12 +338,8 @@ def test_the_failed_setup_would_have_been_a_limit_not_a_market_fill(tmp_path):
     feed.tick(price=4392.20)  # the top of the recovery
 
     row = feed.store.get_setup(setup_id)
-    assert row["state"] == "LIMIT", "a fill at the expensive edge of the zone is not an entry"
-    import json
-
-    plan = json.loads(row["computed_json"])["plan"]
-    assert plan["entry"] <= 4391.09, "the order belongs in the cheap half of the zone"
-    assert "gjysma e shtrenjtë" in feed.last_message()
+    assert row["state"] == "AT_ZONE", "the nearest supply never broke: there is no entry to place"
+    assert row["triggered_at"] is None, "nothing was entered at any price"
 
 
 def test_the_same_window_holds_once_price_falls_back_to_the_edge():

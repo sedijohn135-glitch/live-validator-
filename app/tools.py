@@ -13,7 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from app.evidence import LATE_ADVANCE_R, PRIMARY, SCORE_MIN, WEIGHTS
+from app.evidence import FRESH_BARS, LATE_ADVANCE_R, PRIMARY, REQUIRED, SCORE_MIN, WEIGHTS
 from app.runtime import Runtime
 
 REQUIRED_FIELDS = ("symbol", "stop_loss", "entry (or entry_low + entry_high)")
@@ -112,11 +112,21 @@ def register(server: MCPServer, runtime: Runtime) -> None:
                 "entry": {
                     "score_min": SCORE_MIN,
                     "primary_required": True,
+                    "required": REQUIRED,
+                    "required_means": (
+                        "the nearest opposing micro-swing — demand under a short, supply over a long "
+                        "— broken by a close; the score says the zone reacted, the break says who won"
+                    ),
+                    "fresh_bars": FRESH_BARS,
+                    "fresh_means": (
+                        "only the last few closed M1 bars since the touch count: a signal from before "
+                        "price went round the zone and came back describes a reaction that failed"
+                    ),
                     "signals": WEIGHTS,
                     "primary_signals": list(PRIMARY),
                     "late_advance_r": LATE_ADVANCE_R,
                 },
-                "holds_never_reject": ["SPREAD", "KNIFE", "DATA", "FRESH"],
+                "holds_never_reject": ["SPREAD", "KNIFE", "DATA", "FRESH", "REACTION", "STRUCTURE"],
                 "cancellations": [
                     "stop touched before the entry was touched",
                     "TP1 touched before the entry was touched",

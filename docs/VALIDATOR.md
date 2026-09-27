@@ -65,7 +65,26 @@ structure. (That was a real defect, found in production on 2026-09-18.)
 | `MOMENTUM` | 1 | An M1 candle in the trade direction with body ≥ 0.9 × ATR **and** its close in the top third of its range: an impulse, not a wide candle that gave it back. |
 | `ABSORPTION` | 1 | Three consecutive M1 closes holding the zone's better half, while at least one of them was pressed into the worse half. Drifting through the zone is not a defence. |
 
-**Verdict: enter when `score ≥ 3` and at least one primary signal is present.**
+**Verdict: enter when `score ≥ 3`, at least one primary signal is present, and `SHIFT` is among
+them — read on the last 6 closed M1 bars since the touch.**
+
+Two conditions sit on top of the score, both learned from live trades that confirmed on the same
+`REJECTION` + `MOMENTUM` = 3. `XAU-0924-A3XV` ran to TP3. `XAU-0925-HBZA` was stopped six minutes
+after entry. The score could not tell them apart; these two facts can.
+
+- **The break is required.** `SHIFT` — the nearest opposing swing broken by a close — is the only
+  signal that says who is now in control. HBZA shorted into three rising lows (4254.49, 4259.94,
+  4262.62); none of them broke. A3XV's structure broke at 14:30. Without the break the verdict holds
+  on `STRUCTURE`.
+- **Evidence must be fresh.** Only the last `FRESH_BARS` = 6 closed M1 candles since the touch
+  count. HBZA's `REJECTION` was sixteen bars and a full round trip through the zone old when it was
+  added to a new `MOMENTUM` candle. A3XV's two signals were two bars apart. Any value from 3 to 15
+  separates them, so this is not a knife-edge fit.
+
+Both cases are kept as regression tests on the real candles (`tests/test_incidents.py`), and the
+test proves the old rule entered HBZA. Two trades are not a statistical sample — the argument for
+these rules is that each fixes an identifiable defect, and neither costs the winning trade its
+entry. The same rule also stops `XAU-0918-LYJ3`, replayed from its real M5 bars.
 
 That is the balance the owner asked for: never a single lone signal (too early), never a six-step
 checklist (too late). Two independent confirmations, one of which must be structural.
@@ -88,6 +107,7 @@ A hold delays the ENTER message and is reported with its reason. The setup stays
 | `DATA` | quote older than 30 s, synthetic price, or a gap in the M1 series | no evidence without data |
 | `FRESH` | no closed M1 candle since the touch | the first tick into a zone is not evidence |
 | `REACTION` | price has come less than 0.50 × ATR off the extreme made since the touch | price sitting on the low it just made has defended nothing, whatever the patterns say |
+| `STRUCTURE` | `SHIFT` is not among the fresh signals — the nearest opposing swing still holds | the score says the zone reacted; only the break says who won. Shorting into rising lows is the reaction losing |
 
 ## 3. Not early, not late
 

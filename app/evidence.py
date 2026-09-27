@@ -17,6 +17,18 @@ PRIMARY = ("RECLAIM", "REJECTION", "SHIFT")
 WEIGHTS = {"RECLAIM": 2, "REJECTION": 2, "SHIFT": 2, "MOMENTUM": 1, "ABSORPTION": 1}
 SCORE_MIN = 3
 
+# No entry without the micro-structure turning in the trade's direction: the nearest opposing swing
+# — demand under a short, supply over a long — has to be broken by a close. Reclaim, rejection and
+# momentum say the zone *reacted*; only the break says who is now in control. XAU-0925-HBZA shorted
+# into three rising lows (4254.49, 4259.94, 4262.62) on REJECTION + MOMENTUM, none of those lows ever
+# broke, and price ran straight through the stop.
+REQUIRED = "SHIFT"
+
+# Evidence has to describe the reaction happening now. A signal older than this many closed M1 bars
+# belongs to a reaction that has already played out: HBZA's REJECTION was sixteen bars and a full
+# round trip through the zone old when it was counted towards the entry.
+FRESH_BARS = 6
+
 WINDOW_BARS = 30  # how far back from the touch evidence is read
 RECLAIM_BARS = 3
 ABSORPTION_BARS = 3
@@ -47,6 +59,7 @@ HOLD_TEXTS = {
     "SPREAD": "spread i lartë — hyrja do ta paguante spike-un",
     "KNIFE": "çmimi po bie/ngjitet me forcë përmes zonës — pa ndalesë s'ka konfirmim",
     "REACTION": "çmimi s'është larguar ende nga ekstremi — asgjë nuk u mbrojt",
+    "STRUCTURE": "struktura mikro nuk është thyer ende në drejtimin e setupit — pa thyerje s'ka hyrje",
 }
 
 
@@ -98,7 +111,7 @@ class Verdict:
 
     @property
     def confirmed(self) -> bool:
-        return self.score >= SCORE_MIN and self.has_primary
+        return self.score >= SCORE_MIN and self.has_primary and REQUIRED in self.codes
 
     @property
     def ready(self) -> bool:
@@ -315,8 +328,14 @@ def zone_failed(setup: Setup, ctx, touch_ts: float) -> bool:
 
 
 def evaluate(setup: Setup, ctx, touch_ts: float) -> Verdict:
-    """The whole verdict for one moment: what the market has shown since the zone was touched."""
-    bars = window(ctx, touch_ts)
+    """The whole verdict for one moment: what the market is showing now, at the zone.
+
+    Only the last FRESH_BARS closed candles since the touch count. The rest of the window is history:
+    a rejection that happened before price went round the zone and came back is evidence of a
+    reaction that already failed, and adding it to a new candle is how two unrelated minutes were
+    added up to an entry.
+    """
+    bars = window(ctx, touch_ts)[-FRESH_BARS:]
     scale = Scale(atr=ctx.atr("M1") or 0.0, tol=max(ctx.median_spread(), ctx.sym.tick))
     price = ctx.bid if ctx.bid is not None else setup.zone_mid
     extreme = extreme_since(setup, bars, setup.zone_low if setup.is_long else setup.zone_high)
@@ -333,9 +352,12 @@ def evaluate(setup: Setup, ctx, touch_ts: float) -> Verdict:
             )
             if signal is not None
         ]
+    holds = holds_for(setup, ctx, bars, scale, extreme, price)
+    if scale.usable and bars and REQUIRED not in [signal.code for signal in signals]:
+        holds.append("STRUCTURE")
     return Verdict(
         signals=signals,
-        holds=holds_for(setup, ctx, bars, scale, extreme, price),
+        holds=holds,
         extreme=extreme,
         advance_r=advance_r(setup, price, setup.risk),
         bars=len(bars),
