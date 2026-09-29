@@ -109,8 +109,12 @@ def register(server: MCPServer, runtime: Runtime) -> None:
             return dumps(runtime.unknown_symbol(symbol))
         await runtime.ensure_history(symbol, (timeframe,))
         await runtime.refresh_candles(symbol, (timeframe,), count=3)
-        decimals = runtime.settings.symbol(symbol).display_decimals
         series = runtime.candles.series(symbol, timeframe)[-count:]
+        if series:
+            # Called before any snapshot, a symbol named on demand has no quote yet to size its
+            # decimals from — and the two-decimal fallback printed EURUSD as a row of 1.13s.
+            runtime.settings.register_symbol(symbol, series[-1].c)
+        decimals = runtime.settings.symbol(symbol).display_decimals
         return dumps(
             {
                 "schema": "candles/1",

@@ -214,3 +214,21 @@ def test_a_symbol_the_account_does_not_carry_says_so(tmp_path):
     assert payload["data"]["usable"] is False
     result = call(server, "setup_submit", {"symbol": "NOTREAL", "entry": 1.1, "stop_loss": 1.0})
     assert result["status"] == "unknown_symbol"
+
+
+def test_candles_for_a_symbol_named_first_use_its_own_decimals(tmp_path):
+    """Found live: market_candles on EURUSD before any snapshot printed every bar as 1.13."""
+    from mcp.server.mcpserver import MCPServer
+
+    from app.tools import register
+
+    tape = Tape(symbol="EURUSD", price=1.13047)
+    tape.drift(60, step=0.00003, span=0.0004)
+    runtime, _telegram = TapeRuntime.build(tmp_path, tape)
+    server = MCPServer(name="live-validator-test")
+    register(server, runtime)
+
+    payload = call(server, "market_candles", {"symbol": "eurusd", "timeframe": "M1", "count": 5})
+    closes = [row[4] for row in payload["candles"]]
+    assert len(set(closes)) > 1, f"five decimals tell the bars apart: {closes}"
+    assert all(len(str(c).split(".")[1]) >= 4 for c in closes), closes
