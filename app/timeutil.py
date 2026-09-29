@@ -160,14 +160,29 @@ def in_lunch(moment: datetime) -> bool:
     return WINDOWS["LUNCH"].contains(moment)
 
 
+CRYPTO_PREFIXES = (
+    "BTC", "ETH", "LTC", "XRP", "BCH", "SOL", "ADA", "DOT", "DOGE", "LINK", "XLM", "BNB", "AVAX", "UNI",
+)
+
+
+def is_crypto(symbol: str) -> bool:
+    """Crypto CFDs trade through the weekend; everything else on the account follows the FX week."""
+    return symbol.upper().startswith(CRYPTO_PREFIXES)
+
+
 def is_market_open(symbol: str, moment: datetime) -> bool:
-    """CFD hours. XAUUSD: Fri 17:00 → Sun 18:00 closed. Daily break 17:00–18:00 for both symbols."""
+    """CFD hours. Daily break 17:00–18:00 NY for every symbol; all but crypto close Fri 17:00 → Sun 18:00.
+
+    Gold was the only symbol with a weekend here while it and bitcoin were the only two that could be
+    asked for. Now that any symbol on the account can be, FX, indices, metals and energies all get the
+    weekly close, and only crypto keeps trading.
+    """
     ny = to_ny(moment)
     minutes = ny.hour * 60 + ny.minute
     weekday = ny.weekday()  # Mon=0 … Sun=6
     if 17 * 60 <= minutes < 18 * 60:
         return False
-    if symbol.upper() == "XAUUSD":
+    if not is_crypto(symbol):
         if weekday == 4 and minutes >= 17 * 60:
             return False
         if weekday == 5:

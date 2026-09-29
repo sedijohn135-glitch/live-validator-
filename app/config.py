@@ -173,6 +173,21 @@ class Settings:
             name.upper(), SymbolSettings(name.upper(), 1.0, 2, (0.01, 10_000_000.0))
         )
 
+    def register_symbol(self, name: str, price: float) -> SymbolSettings:
+        """Constants for a symbol resolved on demand, read from the size of its own price.
+
+        The configured pair keeps its hand-set values. A symbol named later has nothing configured,
+        and two decimals — the old fallback — shows EURUSD as 1.08 and hides every pip that matters.
+        """
+        name = name.upper()
+        known = self.symbol_settings.get(name) or SYMBOL_DEFAULTS.get(name)
+        if known is not None:
+            return known
+        decimals = 5 if price < 20 else 3 if price < 2000 else 2
+        settings = SymbolSettings(name, max(price * 0.0005, 10.0**-decimals), decimals, (0.01, 10_000_000.0))
+        self.symbol_settings[name] = settings
+        return settings
+
     def telegram_configured(self) -> bool:
         return bool(self.telegram_bot_token and self.telegram_chat_id)
 

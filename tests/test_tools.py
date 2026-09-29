@@ -181,3 +181,36 @@ def test_market_candles_returns_closed_bars_only(tmp_path):
     payload = call(server, "market_candles", {"symbol": "XAUUSD", "timeframe": "M5", "count": 10})
     assert payload["count"] == 10
     assert all(len(row) == 5 for row in payload["candles"])
+
+
+# ------------------------------------------------------------ any symbol on the account
+def test_the_symbol_is_free_text_not_a_fixed_list(tmp_path):
+    """The owner analyses whatever they choose; the list is their account's, not ours."""
+    server, *_ = scenario_app(tmp_path)
+    for tool in tools_of(server):
+        prop = tool.input_schema.get("properties", {}).get("symbol")
+        if prop is None:
+            continue
+        assert prop["type"] == "string", tool.name
+        assert "enum" not in prop, f"{tool.name} still limits the symbols"
+        assert "EURUSD" in prop["description"]
+
+
+def test_names_are_normalised_the_way_people_type_them():
+    from app.tools import normalise_symbol
+
+    assert normalise_symbol("xau/usd") == "XAUUSD"
+    assert normalise_symbol(" Gold ") == "XAUUSD"
+    assert normalise_symbol("btc-usd") == "BTCUSD"
+    assert normalise_symbol("eur usd") == "EURUSD"
+    assert normalise_symbol("us30") == "US30"
+
+
+def test_a_symbol_the_account_does_not_carry_says_so(tmp_path):
+    """A clear answer, never an analysis built on nothing."""
+    server, *_ = scenario_app(tmp_path)
+    payload = call(server, "market_snapshot", {"symbol": "NOTREAL"})
+    assert payload["data"]["status"] == "unknown_symbol"
+    assert payload["data"]["usable"] is False
+    result = call(server, "setup_submit", {"symbol": "NOTREAL", "entry": 1.1, "stop_loss": 1.0})
+    assert result["status"] == "unknown_symbol"

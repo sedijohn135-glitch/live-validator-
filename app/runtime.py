@@ -241,9 +241,12 @@ class Runtime:
             self._on_data_ok()
 
     def _symbols_to_watch(self) -> list[str]:
+        """Every symbol with a live setup or a recent analysis — whichever the owner asked about."""
         active = {row["symbol"] for row in self.store.setups_in_state(OPEN_STATES)}
         recent = {s for s, (stamp, _payload) in self.last_snapshot.items() if self.clock() - stamp < 300}
-        return [s for s in self.settings.symbols if s in active or s in recent]
+        wanted = active | recent
+        configured = [s for s in self.settings.symbols if s in wanted]
+        return configured + sorted(wanted - set(configured))
 
     async def refresh_candles(self, symbol: str, timeframes: tuple[str, ...], count: int = 3) -> bool:
         """Fetch candles. Returns False when nothing arrived, so no caller can mistake it for health."""
@@ -401,11 +404,12 @@ class Runtime:
                 self._last_idle_beat = now
                 await self._heartbeat()
             return
+        await self._ensure_watched_resolved()
         await self.refresh_quotes()
+        for symbol, quote in list(self.quotes.items()):
+            self.settings.register_symbol(symbol, quote.bid)
         backfill, self._backfill_after_outage = self._backfill_after_outage, False
-        for symbol in self.settings.symbols:
-            if not self._is_watched(symbol):
-                continue
+        for symbol in self._symbols_to_watch():
             if backfill:
                 with contextlib.suppress(Exception):
                     await self.refresh_candles(symbol, ["M1", "M5"], count=BACKFILL_CANDLES)
@@ -414,24 +418,80 @@ class Runtime:
                 await self.refresh_candles(symbol, due, count=3)
         if self.data_status != "ok" and self.last_quote_at and now - self.last_quote_at > OUTAGE_PAUSE_S:
             return  # PAUSED: no triggers without data
-        for symbol in self.settings.symbols:
-            if self._is_watched(symbol):
-                self.engine.process_symbol(symbol, self.clock())
+        for symbol in self._symbols_to_watch():
+            self.engine.process_symbol(symbol, self.clock())
 
     def _is_watched(self, symbol: str) -> bool:
         return symbol in self._symbols_to_watch()
 
     # -------------------------------------------------------------- snapshot
+    async def _ensure_watched_resolved(self) -> None:
+        """A live setup on a symbol named on demand must survive a restart.
+
+        Start-up resolves the configured pair only. A setup on EURUSD registered yesterday is still
+        in the database after a deploy, but its symbol id is gone — the quote batch drops it, and the
+        setup would never be looked at again. Resolving it costs nothing: the account catalogue is
+        already in memory.
+        """
+        for symbol in self._symbols_to_watch():
+            if symbol in self.ctrader.symbols:
+                continue
+            if await self.resolve_symbol(symbol):
+                with contextlib.suppress(Exception):
+                    await self.ensure_history(symbol)
+
+    async def resolve_symbol(self, symbol: str) -> bool | None:
+        """True: usable. False: the account was asked and has no such symbol. None: it could not be asked.
+
+        The last two must never be confused. With the feed down or unconfigured, "EURUSD is not on
+        your account" would be a false statement; the normal snapshot path already says the true one.
+        """
+        if symbol in self.ctrader.symbols:
+            return True
+        if self.ctrader.credentials is None and self.ctrader.load_credentials() is None:
+            return None
+        try:
+            info = await self.ctrader.resolve(symbol)
+        except AuthError as exc:
+            self._on_auth_error(exc)
+            return None
+        except DataError as exc:
+            self._on_data_error(exc)
+            return None
+        if info is None:
+            return False if self.ctrader.catalogue else None
+        return True
+
+    def unknown_symbol(self, symbol: str) -> dict[str, Any]:
+        """A clear answer for a name the account does not carry, with what it does carry nearby."""
+        close = self.ctrader.suggestions(symbol)
+        return {
+            "schema": "snapshot/1",
+            "symbol": symbol,
+            "data": {
+                "status": "unknown_symbol",
+                "usable": False,
+                "detail": f"{symbol} nuk gjendet në llogarinë cTrader"
+                + (f" — gjenden: {', '.join(close)}" if close else ""),
+                "suggestions": close,
+            },
+            "notes": ["NO MARKET DATA: this symbol is not on the connected account. Ask the owner which one."],
+        }
+
     async def snapshot(self, symbol: str) -> dict[str, Any]:
         now = self.clock()
         cached = self.last_snapshot.get(symbol)
         if cached and now - cached[0] < SNAPSHOT_CACHE_S:
             return cached[1]
+        if await self.resolve_symbol(symbol) is False:
+            return self.unknown_symbol(symbol)
         await self.ensure_history(symbol)
         await self.refresh_candles(symbol, SNAPSHOT_TIMEFRAMES, count=3)
         await self.refresh_quotes_for(symbol)
-        decimals = self.settings.symbol(symbol).display_decimals
         quote = self.quote_for(symbol, now)
+        if quote is not None:
+            self.settings.register_symbol(symbol, quote.bid)
+        decimals = self.settings.symbol(symbol).display_decimals
         payload = build_snapshot(
             symbol,
             self.candles,
@@ -481,11 +541,17 @@ class Runtime:
             block["warnings"] = (self.settings.warnings + self.ctrader.warnings)[:5]
         return block
 
-    async def prepare_for_submit(self, symbol: str) -> None:
-        """Fresh data before the intake gate runs: G-02 must never arm on stale or missing candles."""
+    async def prepare_for_submit(self, symbol: str) -> bool:
+        """Fresh data before the intake gate runs. False only when the account has no such symbol."""
+        if await self.resolve_symbol(symbol) is False:
+            return False
         await self.ensure_history(symbol)
         await self.refresh_candles(symbol, SNAPSHOT_TIMEFRAMES, count=3)
         await self.refresh_quotes_for(symbol)
+        quote = self.quotes.get(symbol)
+        if quote is not None:
+            self.settings.register_symbol(symbol, quote.bid)
+        return True
 
     async def refresh_quotes_for(self, symbol: str) -> None:
         try:

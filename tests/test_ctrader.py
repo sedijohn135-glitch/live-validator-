@@ -558,3 +558,23 @@ def test_a_verdict_on_the_request_is_not_retried(tmp_path):
             await client.call("get_version")
 
     with_client(tmp_path, body)
+
+
+# ------------------------------------------------------------ symbols resolved on demand
+def test_any_symbol_on_the_account_resolves_on_demand(tmp_path):
+    """Only XAUUSD and BTCUSD are configured; EURUSD is on the account and must resolve when asked."""
+    from app.ctrader import WIRE_DIGITS
+
+    async def body(client, fake, _store):
+        assert "EURUSD" not in client.symbols, "not configured, so not resolved at start-up"
+        info = await client.resolve("eurusd")
+        assert info is not None and info.symbol_id == 1
+        assert info.digits == WIRE_DIGITS, "the protocol's own scale, not a guess"
+        assert "EURUSD" in client.symbols
+        quotes = await client.quotes(["EURUSD"])
+        assert "EURUSD" in quotes, "a resolved symbol is quotable straight away"
+
+        assert await client.resolve("NOTREAL") is None
+        assert client.suggestions("EURGBP") == ["EURUSD"]
+
+    with_client(tmp_path, body)

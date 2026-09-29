@@ -87,3 +87,16 @@ def test_candle_closed_needs_grace():
     open_ts = ny("2026-09-16 08:00").timestamp()
     assert not candle_is_closed(open_ts, 300, open_ts + 300, 2)
     assert candle_is_closed(open_ts, 300, open_ts + 302, 2)
+
+
+def test_only_crypto_trades_through_the_weekend():
+    """Gold had the only weekend close while it and bitcoin were the only two symbols."""
+    from app.timeutil import is_crypto, is_market_open, parse_ny
+
+    saturday = parse_ny("2026-09-26 12:00")
+    for name in ("EURUSD", "XAGUSD", "US30", "XAUUSD"):
+        assert not is_market_open(name, saturday), name
+    for name in ("BTCUSD", "ETHUSD"):
+        assert is_crypto(name) and is_market_open(name, saturday), name
+    tuesday = parse_ny("2026-09-29 10:00")
+    assert is_market_open("EURUSD", tuesday)

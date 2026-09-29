@@ -70,3 +70,13 @@ def test_the_app_name_is_configurable_and_bounded():
     assert load_settings({}).app_name == "Live Validator"
     assert load_settings({"APP_NAME": "  Sniper XAU  "}).app_name == "Sniper XAU"
     assert len(load_settings({"APP_NAME": "x" * 200}).app_name) == 40
+
+
+def test_a_symbol_named_later_gets_decimals_from_its_own_price():
+    """Two decimals was the old fallback, and it shows EURUSD as 1.08 — every pip hidden."""
+    settings = load_settings({})
+    assert settings.register_symbol("EURUSD", 1.08123).display_decimals == 5
+    assert settings.register_symbol("USDJPY", 149.812).display_decimals == 3
+    assert settings.register_symbol("US30", 42150.5).display_decimals == 2
+    assert settings.symbol("EURUSD").display_decimals == 5, "and it is remembered"
+    assert settings.register_symbol("XAUUSD", 4300.0) == settings.symbol("XAUUSD"), "configured wins"

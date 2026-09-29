@@ -67,6 +67,10 @@ PERIODS = {
 MAX_WINDOW_S = 720 * 3600  # the server refuses wider request windows
 MAX_BARS_PER_CALL = 90  # the proxy truncates a response at ~100 bars whatever the window
 PRECISION_TABLE = {"XAUUSD": 3, "BTCUSD": 2}
+# The cTrader Open API sends every price as an integer in 1/100000 of the quote currency, whatever
+# the symbol. The two configured symbols reach the same scale by band calibration; a symbol resolved
+# on demand has no band to calibrate against, so it starts from the protocol's own scale.
+WIRE_DIGITS = 5
 
 # "session" and "expired" on their own are far too broad: a broker saying "trading session is
 # closed" during the daily break would raise a false "your token expired" alarm and pause the engine.
@@ -345,6 +349,7 @@ class CTraderClient:
     tool_schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
     time_format: str = "iso"
     symbols: dict[str, SymbolInfo] = field(default_factory=dict)
+    catalogue: list[dict[str, Any]] = field(default_factory=list)
     version: str = ""
     profile_kind: str = "unknown"
     status: str = "not_configured"
@@ -491,7 +496,10 @@ class CTraderClient:
     async def load_symbols(self) -> dict[str, SymbolInfo]:
         payload = await self.call("get_symbols")
         entries = _as_list(payload, "symbols")
-        resolved: dict[str, SymbolInfo] = {}
+        # The whole account's list, kept so that any symbol the owner names later resolves without
+        # another round trip — the configured pair is only where the watch starts, not a limit.
+        self.catalogue = entries
+        resolved: dict[str, SymbolInfo] = dict(self.symbols)
         for wanted in self.settings.symbols:
             info = self._resolve_symbol(wanted, entries)
             if info is None:
@@ -504,6 +512,32 @@ class CTraderClient:
                 "ctrader_symbols", {k: {"id": v.symbol_id, "digits": v.digits} for k, v in resolved.items()}
             )
         return resolved
+
+    async def resolve(self, wanted: str) -> SymbolInfo | None:
+        """Any symbol on the connected account, on demand. None when the account has no such symbol."""
+        wanted = wanted.upper()
+        if wanted in self.symbols:
+            return self.symbols[wanted]
+        if not self.catalogue:
+            await self.load_symbols()
+            if wanted in self.symbols:
+                return self.symbols[wanted]
+        found = self._resolve_symbol(wanted, self.catalogue)
+        if found is None:
+            return None
+        info = SymbolInfo(wanted, found.symbol_id, WIRE_DIGITS)
+        self.symbols[wanted] = info
+        if self.store:
+            self.store.set_json(
+                "ctrader_symbols", {k: {"id": v.symbol_id, "digits": v.digits} for k, v in self.symbols.items()}
+            )
+        return info
+
+    def suggestions(self, wanted: str, limit: int = 6) -> list[str]:
+        """Names on the account that look like what was asked for, for a helpful "not found"."""
+        names = [str(e.get("symbolName") or e.get("name") or "") for e in self.catalogue]
+        key = wanted.upper()[:3]
+        return [n for n in names if n and key and key in n.upper()][:limit]
 
     def _resolve_symbol(self, wanted: str, entries: list[dict[str, Any]]) -> SymbolInfo | None:
         mapped = self.settings.symbol_map.get(wanted)

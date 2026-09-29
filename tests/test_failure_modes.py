@@ -427,3 +427,21 @@ def test_the_watchdog_replaces_an_engine_that_froze(tmp_path):
     assert was_replaced is True
     assert runtime.engine_restarts == 1
     assert runtime.health()["engine"]["restarts"] == 1, "and the owner can see it happened"
+
+
+def test_a_setup_on_a_symbol_named_on_demand_survives_a_restart(tmp_path):
+    """Start-up resolves the configured pair only. A live EURUSD setup must not be orphaned by it."""
+    runtime, ctrader, _telegram = make_runtime(tmp_path)
+
+    async def scenario():
+        await runtime.ctrader.discover()
+        assert "EURUSD" not in runtime.ctrader.symbols, "a fresh process knows only XAUUSD and BTCUSD"
+        runtime.engine.submit({"symbol": "EURUSD", "entry": 56.0, "stop_loss": 55.0, "tp1": 58.0})
+        try:
+            await runtime.tick()
+        finally:
+            await runtime.ctrader.aclose()
+
+    asyncio.run(scenario())
+    assert "EURUSD" in runtime.ctrader.symbols, "the watched symbol was resolved again"
+    assert "EURUSD" in runtime.quotes, "and it was quoted, so the setup is being looked at"

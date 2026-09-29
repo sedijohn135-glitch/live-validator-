@@ -190,10 +190,16 @@ per 5 minutes per setup, so the detail never becomes noise.
 Nothing is hardcoded in price terms except the round-number grid; everything else is derived from
 live ATR, live spread and the instrument's tick.
 
-| | XAUUSD | BTCUSD |
-|---|---|---|
-| round-number grid | 5.0 | 250.0 |
-| decimals | 2 | 2 |
+| | XAUUSD | BTCUSD | any other symbol |
+|---|---|---|---|
+| round-number grid | 5.0 | 250.0 | none — swings and session levels only |
+| decimals | 2 | 2 | from its own price: < 20 → 5, < 2000 → 3, else 2 |
+| weekend | closed | open | closed, except crypto (BTC, ETH, SOL, XRP…) |
+
+Any symbol on the connected cTrader account can be analysed and monitored, not only the configured
+pair. It is resolved from the account's own symbol list the first time it is named, its prices are
+read at the protocol's fixed scale (1/100000), and a live setup on it is resolved again after a
+restart so it is never orphaned.
 
 ## 8. Deliberately out of scope
 

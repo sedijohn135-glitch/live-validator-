@@ -7,6 +7,7 @@ accepts only a subset of JSON Schema; results are one compact JSON text block (m
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -18,7 +19,33 @@ from app.runtime import Runtime
 
 REQUIRED_FIELDS = ("symbol", "stop_loss", "entry (or entry_low + entry_high)")
 
-SYMBOL_ENUM = Literal["XAUUSD", "BTCUSD"]
+# Any symbol on the connected cTrader account. A plain string, never an enum: the list is the
+# owner's account, not ours, and an enum would have to be rebuilt every time they trade something new.
+SYMBOL_TEXT = Annotated[
+    str,
+    Field(
+        description=(
+            "Any symbol on the connected cTrader account, e.g. XAUUSD, BTCUSD, EURUSD, GBPJPY, XAGUSD, "
+            "US30, USTEC, ETHUSD. Case, spaces and '/' are ignored; 'gold' and 'btc' are understood"
+        )
+    ),
+]
+ALIASES = {
+    "GOLD": "XAUUSD",
+    "XAU": "XAUUSD",
+    "SILVER": "XAGUSD",
+    "XAG": "XAGUSD",
+    "BTC": "BTCUSD",
+    "BITCOIN": "BTCUSD",
+    "ETH": "ETHUSD",
+    "ETHEREUM": "ETHUSD",
+}
+
+
+def normalise_symbol(raw: str) -> str:
+    """'xau/usd', ' Gold ', 'btc-usd' → the account's own spelling of the name."""
+    cleaned = re.sub(r"[^A-Za-z0-9.]", "", raw or "").upper()
+    return ALIASES.get(cleaned, cleaned)
 TIMEFRAME_ENUM = Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -59,9 +86,9 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         structured_output=False,
     )
     async def market_snapshot(
-        symbol: Annotated[SYMBOL_ENUM, Field(description="Instrument to snapshot")],
+        symbol: SYMBOL_TEXT,
     ) -> str:
-        return dumps(await runtime.snapshot(symbol))
+        return dumps(await runtime.snapshot(normalise_symbol(symbol)))
 
     @server.tool(
         name="market_candles",
@@ -73,10 +100,13 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         structured_output=False,
     )
     async def market_candles(
-        symbol: Annotated[SYMBOL_ENUM, Field(description="Instrument to read")],
+        symbol: SYMBOL_TEXT,
         timeframe: Annotated[TIMEFRAME_ENUM, Field(description="Candle timeframe")],
         count: Annotated[int, Field(description="How many closed candles, 1 to 500", ge=1, le=500)] = 100,
     ) -> str:
+        symbol = normalise_symbol(symbol)
+        if await runtime.resolve_symbol(symbol) is False:
+            return dumps(runtime.unknown_symbol(symbol))
         await runtime.ensure_history(symbol, (timeframe,))
         await runtime.refresh_candles(symbol, (timeframe,), count=3)
         decimals = runtime.settings.symbol(symbol).display_decimals
@@ -156,7 +186,7 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         structured_output=False,
     )
     async def setup_submit(
-        symbol: Annotated[SYMBOL_ENUM, Field(description="Instrument of the setup")],
+        symbol: SYMBOL_TEXT,
         stop_loss: Annotated[float, Field(description="Stop loss price")],
         entry: Annotated[float, Field(description="Single entry price, or 0 when a zone is given")] = 0.0,
         entry_low: Annotated[float, Field(description="Lower edge of the entry zone")] = 0.0,
@@ -174,7 +204,7 @@ def register(server: MCPServer, runtime: Runtime) -> None:
         client_ref: Annotated[str, Field(description="Free reference you can use to find this setup again")] = "",
     ) -> str:
         payload = {
-            "symbol": symbol,
+            "symbol": normalise_symbol(symbol),
             "stop_loss": stop_loss,
             "entry": entry,
             "entry_low": entry_low,
@@ -187,7 +217,9 @@ def register(server: MCPServer, runtime: Runtime) -> None:
             "note": note,
             "client_ref": client_ref,
         }
-        await runtime.prepare_for_submit(symbol)
+        if not await runtime.prepare_for_submit(payload["symbol"]):
+            # Not a judgement on the setup: a symbol the account does not carry cannot be watched.
+            return dumps({"status": "unknown_symbol", **runtime.unknown_symbol(payload["symbol"])["data"]})
         return dumps(runtime.engine.submit(payload))
 
     @server.tool(

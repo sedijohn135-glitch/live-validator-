@@ -103,7 +103,11 @@ Ngarko `spark-skill/live-validator/SKILL.md`, ose ngjit në skill-in tënd tekst
 kush vendos momentin e hyrjes.
 
 ## 10) Përdorimi i përditshëm
-- Te Gemini shkruan: `xauusd` ose `btcusd` (për siguri: `@live-validator xauusd`).
+- Te Gemini shkruan **çdo simbol që ka llogaria jote cTrader**: `xauusd`, `btcusd`, `eurusd`,
+  `gbpjpy`, `xagusd`, `us30`, `ethusd`… (për siguri: `@live-validator eurusd`). Shkronjat e
+  mëdha/vogla, hapësirat dhe `/` nuk kanë rëndësi; `gold` dhe `btc` kuptohen.
+- Simboli i ri i parë merr pak më shumë kohë: historia e tij ngarkohet herën e parë që e kërkon.
+- Nëse simboli nuk ekziston në llogari, përgjigjja e thotë dhe të tregon emrat e ngjashëm që ka.
 - Gemini analizon dhe e dërgon setup-in vetë, pa të pyetur. Të gjitha mjetet i janë deklaruar si
   "vetëm lexim", ndaj Spark nuk kërkon **Allow**. Nëse Google e shfaq prapë një herë atë pyetje,
   vjen nga ana e tyre — shtype dhe vazhdon.

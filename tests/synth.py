@@ -180,10 +180,16 @@ class TapeRuntime:
         async def aload(*args, **kwargs):
             load()
 
+        async def known(symbol: str, *_args, **_kwargs) -> bool:
+            # The tape carries exactly one symbol; any other name is one the "account" does not have.
+            load()
+            return symbol == tape.symbol
+
         load()
         runtime.ensure_history = aload
         runtime.refresh_candles = aload
         runtime.refresh_quotes = aload
         runtime.refresh_quotes_for = aload
-        runtime.prepare_for_submit = aload
+        runtime.resolve_symbol = known
+        runtime.prepare_for_submit = known
         return runtime, telegram
