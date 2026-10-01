@@ -448,7 +448,12 @@ class Engine:
         risk = built.risk or setup.risk
 
         if (price <= built.stop) if setup.is_long else (price >= built.stop):
-            self._close(setup_id, "SL", now, base, tg.sl_message(base, decimals))
+            if computed.get("stop_at_entry"):
+                # The owner was told to move the stop to entry and that the trade could no longer
+                # lose. Reporting "SL hit" here contradicted that, and counted a scratch as a loss.
+                self._close(setup_id, "BE", now, base, tg.breakeven_exit_message(base, decimals))
+            else:
+                self._close(setup_id, "SL", now, base, tg.sl_message(base, decimals))
             return
 
         moved = (price - built.entry) if setup.is_long else (built.entry - price)
@@ -470,6 +475,7 @@ class Engine:
             (price >= built.secure_at) if setup.is_long else (price <= built.secure_at)
         ):
             computed["secure_done"] = True
+            self._stop_to_entry(computed, built)
             payload = {
                 **base,
                 "secure_at": built.secure_at,
@@ -481,12 +487,24 @@ class Engine:
 
         if not computed.get("be_done") and risk and moved >= BE_R * risk:
             computed["be_done"] = True
+            self._stop_to_entry(computed, built)
             self._emit(setup_id, computed, "BREAKEVEN", base, tg.breakeven_message(base, decimals), now)
             return
 
         if not computed.get("reversal_done") and self._reversal(setup, ctx, built):
             computed["reversal_done"] = True
             self._emit(setup_id, computed, "REVERSAL", base, tg.reversal_message(base, decimals), now)
+
+    @staticmethod
+    def _stop_to_entry(computed: dict[str, Any], built: planning.Plan) -> None:
+        """Do what the message just told the owner to do: the engine's own stop moves to entry.
+
+        Both SECURE ("vendos SL-në te hyrja") and BREAKEVEN ("tregtia nuk mund të humbasë më") said
+        so, while the engine kept watching the original stop. XAU-0928-QB3E reached the secure level
+        and 1R, came back, and was announced and counted as a full SL.
+        """
+        computed["plan"]["stop"] = built.entry
+        computed["stop_at_entry"] = True
 
     @staticmethod
     def _reversal(setup: Setup, ctx: MarketContext, built: planning.Plan) -> bool:
@@ -599,5 +617,6 @@ class Engine:
             "cancel": sum(1 for o in outcomes if o.startswith("CANCELLED")),
             "win": sum(1 for o in outcomes if o.startswith("TP")),
             "loss": sum(1 for o in outcomes if o == "SL"),
+            "be": sum(1 for o in outcomes if o == "BE"),
             "open": sum(1 for row in rows if row["state"] in OPEN_STATES),
         }

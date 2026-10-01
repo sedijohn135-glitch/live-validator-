@@ -263,3 +263,37 @@ def test_the_touch_is_the_whole_zone_not_a_single_price(tmp_path, price):
     quiet_approach(feed)
     feed.tick(price=price)
     assert feed.state(setup_id) == "AT_ZONE"
+
+
+def test_after_breakeven_a_return_to_entry_is_a_scratch_not_a_loss(tmp_path):
+    """XAU-0928-QB3E: secure level reached, 1R reached, then back to the original stop.
+
+    The engine told the owner to move the stop to entry and that the trade could no longer lose —
+    and then announced "SL U PREK" and counted a full loss, because its own stop had never moved.
+    """
+    feed = Feed(tmp_path, price=4320.0)
+    setup_id = feed.submit(**ZONE)["setup_id"]
+    quiet_approach(feed)
+    feed.tick(price=4298.0)
+    confirm_long(feed)
+    feed.tick(price=4301.0)
+    assert feed.state(setup_id) == "ENTERED"
+    plan = plan_of(feed, setup_id)
+    entry, risk, original_stop = plan["entry"], plan["risk"], plan["stop"]
+
+    feed.tape.drift(2, step=0.5)
+    for _ in range(3):  # the secure level comes first, then 1R: one event per pass
+        feed.tick(price=entry + 1.1 * risk)
+    told = feed.messages()
+    assert any("SIGURO FITIMET" in m for m in told) and any("SL NË HYRJE" in m for m in told)
+    assert plan_of(feed, setup_id)["stop"] == entry, "the engine moved its own stop, as it told the owner to"
+
+    feed.tape.drift(2, step=-1.0)
+    feed.tick(price=entry - 0.05)  # back through entry, still far above the original stop
+    assert entry - 0.05 > original_stop
+    assert feed.outcome(setup_id) == "BE"
+    assert "DOLI NË HYRJE" in feed.last_message()
+    assert not any("SL U PREK" in m for m in feed.messages())
+
+    stats = feed.engine.stats()
+    assert stats["be"] == 1 and stats["loss"] == 0, "a scratch is not counted as a loss"

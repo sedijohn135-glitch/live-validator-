@@ -247,6 +247,17 @@ def tp_message(data: dict[str, Any], decimals: int) -> str:
     )
 
 
+def breakeven_exit_message(data: dict[str, Any], decimals: int) -> str:
+    """The stop that was moved to entry was touched: a scratch, not a loss."""
+    return "\n".join(
+        [
+            _head("🔁", "DOLI NË HYRJE (BE)", data["symbol"], data["direction"]),
+            f"Çmimi u kthye te hyrja ({num(data.get('price'), decimals)}). Pa humbje — pjesa e siguruar mbetet fitim.",
+            f"ID: {esc(data['setup_id'])}",
+        ]
+    )
+
+
 def sl_message(data: dict[str, Any], decimals: int) -> str:
     return "\n".join(
         [
@@ -333,7 +344,7 @@ def daily_report(data: dict[str, Any]) -> str:
     return (
         f"📊 <b>RAPORTI {esc(data['date'])}</b>\n"
         f"Setup: {data['n']} · Hyrje: {data['ent']} · Anuluar para hyrjes: {data['cancel']}\n"
-        f"TP1+ {data['win']} · SL {data['loss']} · në pritje {data['open']}"
+        f"TP1+ {data['win']} · BE {data.get('be', 0)} · SL {data['loss']} · në pritje {data['open']}"
     )
 
 
