@@ -165,13 +165,20 @@ Post-entry alerts, in order:
 | price reaches 1.0 R | 🔁 SL → BE |
 | TP1 hit | 🎯 TP1 — stop to the secure level |
 | opposite micro-shift before TP1 | ⚠️ reversal forming — protect what you have |
-| price back at entry after the stop moved | 🔁 DOLI NË HYRJE (BE) — a scratch, outcome `BE` |
+| price back at entry after the BE advice | 🔁 ÇMIMI U KTHYE TE HYRJA (BE) — outcome `BE` |
 
-**The engine moves its own stop when it tells the owner to.** Both the secure message and the 1 R
-message say "stop to entry"; from that moment the engine's stop *is* entry. A return there closes the
-setup as `BE`, announced as a break-even exit and counted apart from losses — never as "SL U PREK".
-Until 2026-10-01 the messages said it and the engine did not: `XAU-0928-QB3E` reached the secure
-level and 1 R, came back, and was announced and counted as a full SL.
+**The validator never touches the account.** It sends advice; the owner opens, moves and closes
+every trade. After "HYR TANI" it follows the trade *on paper*, along the plan it advised, only to
+know which message comes next.
+
+So once it has advised "move the stop to entry" (at the secure level and again at 1 R), the paper
+trade is tracked with the stop at entry. A return there closes the setup as `BE`, and the message
+says what that means in both cases, because the validator cannot know which one happened: if the
+advice was followed, the trade closed without loss; if not, the owner's stop is still at the
+original level, which the message names, and the validator no longer follows the setup.
+
+Until 2026-10-01 the paper trade kept the original stop after advising entry: `XAU-0928-QB3E`
+reached the secure level and 1 R, came back, and was announced and counted as a full SL.
 | TP2 / TP3 hit, stop hit | 🏁 / 🛑 |
 
 ## 5.1 A zone that breaks is not a zone that holds

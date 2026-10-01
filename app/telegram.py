@@ -206,7 +206,8 @@ def secure_message(data: dict[str, Any], decimals: int) -> str:
             _head("🛡️", "SIGURO FITIMET", data["symbol"], data["direction"]),
             f"Çmimi arriti {num(data['secure_at'], decimals)} ({esc(data.get('secure_why', ''))})"
             f" = {data.get('secure_r', 0):.2f}R",
-            "Mbyll një pjesë dhe vendos SL-në te hyrja. Këtu çmimi kthehet më shpesh.",
+            f"Këshillë: mbyll një pjesë dhe lëviz SL-në te hyrja ({num(data.get('entry'), decimals)}). "
+            "Këtu çmimi kthehet më shpesh.",
             f"ID: {esc(data['setup_id'])}",
         ]
     )
@@ -215,8 +216,10 @@ def secure_message(data: dict[str, Any], decimals: int) -> str:
 def breakeven_message(data: dict[str, Any], decimals: int) -> str:
     return "\n".join(
         [
-            _head("🔁", "SL NË HYRJE (BE)", data["symbol"], data["direction"]),
-            f"Çmimi kaloi 1R ({num(data.get('price'), decimals)}). Tregtia nuk mund të humbasë më.",
+            _head("🔁", "LËVIZ SL-NË TE HYRJA (BE)", data["symbol"], data["direction"]),
+            f"Çmimi kaloi 1R ({num(data.get('price'), decimals)}). Lëviz SL-në te hyrja "
+            f"({num(data.get('entry'), decimals)}) — kështu tregtia nuk mund të humbasë më.",
+            "Nga tani validatori e ndjek këtë tregti me SL te hyrja.",
             f"ID: {esc(data['setup_id'])}",
         ]
     )
@@ -248,11 +251,19 @@ def tp_message(data: dict[str, Any], decimals: int) -> str:
 
 
 def breakeven_exit_message(data: dict[str, Any], decimals: int) -> str:
-    """The stop that was moved to entry was touched: a scratch, not a loss."""
+    """Price came back to entry after the owner was advised to move the stop there.
+
+    The validator never touches the account and cannot know whether the advice was followed, so it
+    says what each case means instead of claiming either.
+    """
     return "\n".join(
         [
-            _head("🔁", "DOLI NË HYRJE (BE)", data["symbol"], data["direction"]),
-            f"Çmimi u kthye te hyrja ({num(data.get('price'), decimals)}). Pa humbje — pjesa e siguruar mbetet fitim.",
+            _head("🔁", "ÇMIMI U KTHYE TE HYRJA (BE)", data["symbol"], data["direction"]),
+            f"Çmimi: {num(data.get('price'), decimals)} · hyrja: {num(data.get('entry'), decimals)}.",
+            "Nëse e lëvize SL-në te hyrja siç u këshillua: tregtia u mbyll pa humbje, "
+            "pjesa e siguruar mbetet fitim.",
+            f"Nëse jo: SL-ja jote është ende te {num(data.get('original_stop'), decimals)} — "
+            "validatori nuk e ndjek më këtë setup.",
             f"ID: {esc(data['setup_id'])}",
         ]
     )

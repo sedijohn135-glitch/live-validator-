@@ -444,13 +444,20 @@ class Engine:
         """After entry the only job is protecting the profit (docs/VALIDATOR.md §5)."""
         built = planning.Plan.from_dict(computed["plan"])
         decimals = self._decimals(setup.symbol)
-        base = {"symbol": setup.symbol, "direction": setup.direction, "setup_id": setup_id, "price": price}
+        base = {
+            "symbol": setup.symbol,
+            "direction": setup.direction,
+            "setup_id": setup_id,
+            "price": price,
+            "entry": built.entry,
+            "original_stop": computed.get("original_stop", built.stop),
+        }
         risk = built.risk or setup.risk
 
         if (price <= built.stop) if setup.is_long else (price >= built.stop):
             if computed.get("stop_at_entry"):
-                # The owner was told to move the stop to entry and that the trade could no longer
-                # lose. Reporting "SL hit" here contradicted that, and counted a scratch as a loss.
+                # The owner was advised to move their stop to entry. Reporting "SL hit" at the old
+                # level here contradicted that advice and counted a scratch as a loss.
                 self._close(setup_id, "BE", now, base, tg.breakeven_exit_message(base, decimals))
             else:
                 self._close(setup_id, "SL", now, base, tg.sl_message(base, decimals))
@@ -497,12 +504,14 @@ class Engine:
 
     @staticmethod
     def _stop_to_entry(computed: dict[str, Any], built: planning.Plan) -> None:
-        """Do what the message just told the owner to do: the engine's own stop moves to entry.
+        """Track the trade as the owner was just advised to hold it: stop at entry.
 
-        Both SECURE ("vendos SL-në te hyrja") and BREAKEVEN ("tregtia nuk mund të humbasë më") said
-        so, while the engine kept watching the original stop. XAU-0928-QB3E reached the secure level
-        and 1R, came back, and was announced and counted as a full SL.
+        The validator never places, moves or closes anything — the owner trades. This is only the
+        level it watches to decide which message comes next. Both SECURE and BREAKEVEN advise moving
+        the stop to entry, while the paper trade kept the original stop: XAU-0928-QB3E reached the
+        secure level and 1R, came back, and was announced and counted as a full SL.
         """
+        computed.setdefault("original_stop", built.stop)
         computed["plan"]["stop"] = built.entry
         computed["stop_at_entry"] = True
 

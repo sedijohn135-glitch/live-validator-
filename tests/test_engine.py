@@ -175,7 +175,7 @@ def test_after_entry_the_owner_is_told_where_to_secure_the_profit(tmp_path):
 
     feed.tape.drift(1, step=1.0)
     feed.tick(price=built["entry"] + built["risk"] + 0.05)
-    assert "SL NË HYRJE" in feed.last_message()
+    assert "LËVIZ SL-NË TE HYRJA" in feed.last_message()
 
 
 def test_a_target_hit_is_reported_and_the_last_one_closes_the_setup(tmp_path):
@@ -285,14 +285,17 @@ def test_after_breakeven_a_return_to_entry_is_a_scratch_not_a_loss(tmp_path):
     for _ in range(3):  # the secure level comes first, then 1R: one event per pass
         feed.tick(price=entry + 1.1 * risk)
     told = feed.messages()
-    assert any("SIGURO FITIMET" in m for m in told) and any("SL NË HYRJE" in m for m in told)
+    assert any("SIGURO FITIMET" in m for m in told) and any("LËVIZ SL-NË TE HYRJA" in m for m in told)
     assert plan_of(feed, setup_id)["stop"] == entry, "the engine moved its own stop, as it told the owner to"
 
     feed.tape.drift(2, step=-1.0)
     feed.tick(price=entry - 0.05)  # back through entry, still far above the original stop
     assert entry - 0.05 > original_stop
     assert feed.outcome(setup_id) == "BE"
-    assert "DOLI NË HYRJE" in feed.last_message()
+    exit_text = feed.last_message()
+    assert "ÇMIMI U KTHYE TE HYRJA" in exit_text
+    assert "Nëse e lëvize SL-në" in exit_text and "Nëse jo" in exit_text, "it cannot know which"
+    assert f"{original_stop:.2f}" in exit_text, "the owner is told where their stop is if they did not move it"
     assert not any("SL U PREK" in m for m in feed.messages())
 
     stats = feed.engine.stats()

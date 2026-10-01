@@ -106,7 +106,7 @@ def test_the_two_cancellations_read_differently():
 def test_the_protection_messages_exist_for_every_step():
     base = {"symbol": "XAUUSD", "direction": "LONG", "setup_id": "X", "price": 4310.0}
     assert "SIGURO FITIMET" in tg.secure_message({**base, "secure_at": 4305.0, "secure_why": "PDH", "secure_r": 0.9}, 2)
-    assert "SL NË HYRJE" in tg.breakeven_message(base, 2)
+    assert "LËVIZ SL-NË TE HYRJA" in tg.breakeven_message(base, 2)
     assert "SHENJA KTHIMI" in tg.reversal_message(base, 2)
     assert "TP2 U ARRIT" in tg.tp_message({**base, "n": 2, "r_multiple": 2.1}, 2)
     assert "SL U PREK" in tg.sl_message(base, 2)
